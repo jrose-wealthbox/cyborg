@@ -262,6 +262,29 @@ class CyborgGithubAdapterTest < Minitest::Test
     assert_empty result.records
   end
 
+  def test_whitespace_node_ids_degrade_and_hold_prior_cursor
+    notifications = JSON.generate([
+      {
+        "id" => "blank-node", "reason" => "mention", "type" => "Issue",
+        "subject" => {"title" => "Bad", "url" => "https://api.github.example/repos/acme/cyborg/issues/7"},
+        "repository" => {"full_name" => "acme/cyborg", "node_id" => "  "}
+      }
+    ])
+    runner = FakeRunner.new(
+      "notifications?" => reply(notifications),
+      "/issues/7" => reply(JSON.generate("node_id" => "issue-node", "number" => 7, "title" => "Bad")),
+      :default => reply(fixture("github/authenticated.json"))
+    )
+
+    context = @context.with(prior_cursor: "page:3")
+    result = Cyborg::GithubAdapter.new(runner:, gh: "gh", hostname: "github.example", per_page: 2).fetch(context)
+
+    assert_equal "degraded", result.status
+    assert_equal "github.invalid_response", result.error.code
+    assert_equal "page:3", result.next_cursor
+    assert_empty result.records
+  end
+
   def test_context_filters_cannot_expand_configured_allowlist_and_excluded_repo_skips_metadata
     notifications = JSON.generate([
       {

@@ -198,7 +198,7 @@ class CyborgGithubNormalizerTest < Minitest::Test
       metadata: {"number" => 7, "title" => "Mention", "body" => "Mention"}
     )
 
-    assert_nil record.canonical_target_id
+    assert_nil record
   end
 
   def test_numeric_rest_id_is_not_used_as_stable_target_identity
@@ -212,7 +212,7 @@ class CyborgGithubNormalizerTest < Minitest::Test
       metadata: {"id" => 12345, "number" => 7, "title" => "Mention", "body" => "Mention"}
     )
 
-    assert_nil record.canonical_target_id
+    assert_nil record
   end
 
   def test_actionable_record_with_missing_or_hostile_subject_identity_is_excluded
@@ -232,6 +232,26 @@ class CyborgGithubNormalizerTest < Minitest::Test
       )
 
       assert_nil record
+    end
+  end
+
+  def test_whitespace_node_ids_are_invalid_and_never_emitted_as_target_identity
+    ["repo-node", "issue-node"].each do |blank_id|
+      repository = {"full_name" => "acme/cyborg", "node_id" => "repo-node"}
+      metadata = {"node_id" => "issue-node", "number" => 7, "title" => "Mention", "body" => "Mention"}
+      blank_id == "repo-node" ? repository["node_id"] = "  " : metadata["node_id"] = "\t"
+
+      record = @normalizer.normalize(
+        {
+          "id" => "blank-node", "reason" => "mention", "type" => "Issue",
+          "subject" => {"title" => "Mention", "url" => "https://api.github.example/repos/acme/cyborg/issues/7"},
+          "repository" => repository
+        },
+        context: @context,
+        metadata: metadata
+      )
+
+      assert_nil record, blank_id
     end
   end
 end

@@ -39,6 +39,7 @@ module Cyborg
       repository_node_id = repository["node_id"] || metadata.dig("repository", "node_id")
       target_type = target_type_for(type, metadata, subject)
       return nil unless target_type && valid_subject_identity?(subject["url"], number)
+      return nil unless valid_node_id?(repository_node_id) && valid_node_id?(target_node_id)
       title = bounded_text(metadata["title"] || subject["title"] || full_name)
       summary = bounded_text(metadata["body"] || subject["title"] || notification["reason"])
       event_at = canonical_time(notification["updated_at"] || metadata["updated_at"] || metadata["created_at"] || context.window_end_utc)
@@ -98,9 +99,13 @@ module Cyborg
     end
 
     def stable_target_id(repository_node_id, target_node_id)
-      return nil if repository_node_id.to_s.empty? || target_node_id.to_s.empty?
+      return nil unless valid_node_id?(repository_node_id) && valid_node_id?(target_node_id)
 
       [hostname, repository_node_id, target_node_id].join(":")
+    end
+
+    def valid_node_id?(value)
+      value.is_a?(String) && !value.strip.empty?
     end
 
     def valid_subject_identity?(url, number)

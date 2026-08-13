@@ -132,6 +132,42 @@ bundle exec ruby -Itest test/contract/sources/github_adapter_test.rb && \
 3 runs, 11 assertions, 0 failures, 0 errors, 0 skips
 ```
 
+## Fix round 3: node-ID type and whitespace validation
+
+### RED
+
+Added direct-normalizer and adapter regressions for whitespace repository and
+issue node IDs, including cursor preservation. Before the fix:
+
+```text
+github_adapter_test: 19 runs, 53 assertions, 1 failure
+github_normalizer_test: 13 runs, 44 assertions, 1 failure
+```
+
+The adapter returned healthy data for a whitespace repository node ID, and the
+normalizer emitted a target such as `github.example:  :issue-node`.
+
+### GREEN
+
+- Node IDs are accepted only when they are actual `String` values whose
+  `strip` is nonempty; original values are never silently rewritten.
+- `GithubNormalizer` rejects actionable records with invalid repository or
+  issue/PR node IDs before constructing a `NormalizedRecord`.
+- `GithubAdapter` treats the explicit invalid normalization result as a
+  bounded degraded retrieval, excludes the unsafe record, and holds the prior
+  cursor with `github.invalid_response`.
+
+Fix-round focused verification:
+
+```text
+bundle exec ruby -Itest test/contract/sources/github_adapter_test.rb && \
+  bundle exec ruby -Itest test/unit/sources/github_normalizer_test.rb && \
+  bundle exec ruby -Itest test/unit/process_runner_test.rb
+19 runs, 57 assertions, 0 failures, 0 errors, 0 skips
+13 runs, 45 assertions, 0 failures, 0 errors, 0 skips
+3 runs, 11 assertions, 0 failures, 0 errors, 0 skips
+```
+
 ## Fix round 2: stable identity and malformed subjects
 
 ### RED
