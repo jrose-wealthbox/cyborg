@@ -215,6 +215,37 @@ class BridgeArtifactStoreTest < Minitest::Test
     FileUtils.remove_entry(outside) if outside && File.exist?(outside)
   end
 
+  def test_validation_audit_remains_anchored_when_run_path_is_replaced_after_open
+    run_id = "validation-swap"
+    run_directory = @root.join(run_id)
+    outside = Pathname(@tmpdir).join("outside-validation")
+    FileUtils.mkdir_p(outside)
+    outside_audit = outside.join("artifact-audit.json")
+    File.write(outside_audit, JSON.generate("entries" => []))
+    saved_directory = Pathname(@tmpdir).join("saved-validation-run")
+
+    @store.singleton_class.prepend(Module.new do
+      define_method(:append_audit_fd) do |run_fd, entry|
+        File.rename(run_directory, saved_directory)
+        File.symlink(outside, run_directory)
+        super(run_fd, entry)
+      end
+    end)
+
+    audit_path = @store.record_validation_failure!(
+      run_id:, code: "bridge.changed_response", command: "ingest", at: Time.utc(2026, 8, 12, 20)
+    )
+
+    assert_path_exists saved_directory.join("artifact-audit.json")
+    assert_equal "artifact-audit.json", audit_path.basename.to_s
+    assert_equal({"entries" => []}, JSON.parse(File.read(outside_audit)))
+    assert File.symlink?(run_directory)
+  ensure
+    FileUtils.remove_entry(run_directory) if run_directory && File.symlink?(run_directory)
+    FileUtils.remove_entry(saved_directory) if saved_directory && File.exist?(saved_directory)
+    FileUtils.remove_entry(outside) if outside && File.exist?(outside)
+  end
+
   def test_cleanup_rejects_an_oversized_existing_audit_file_before_parsing
     audit_path = @valid_path.dirname.join("artifact-audit.json")
     File.binwrite(audit_path, "{" + ("x" * 4_096))

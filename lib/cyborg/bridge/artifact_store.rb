@@ -101,7 +101,7 @@ module Cyborg
         now = at.is_a?(Time) ? at.utc.iso8601 : Time.iso8601(at.to_s).utc.iso8601
         directory = @root.join(run_id)
         ensure_directory(directory)
-        append_audit(directory, {
+        append_validation_audit(run_id, {
           "run_id" => run_id, "artifact_type" => "bridge_validation_failure", "code" => code.to_s,
           "command" => command.to_s, "created_at" => now
         }.merge(metadata.transform_keys(&:to_s)))
@@ -120,6 +120,7 @@ module Cyborg
         extern "int unlinkat(int, const char *, int)"
         extern "int renameat(int, const char *, int, const char *)"
         extern "int fchmod(int, int)"
+        extern "int mkdirat(int, const char *, int)"
       end
 
       CLEANUP_RDONLY = 0
@@ -180,6 +181,23 @@ module Cyborg
         }
       rescue JSON::ParserError, EncodingError
         raise Cyborg::InvalidArtifact.new("bridge.invalid_json", exit_status: 65)
+      end
+
+      def append_validation_audit(run_id, entry)
+        with_directory_fd(@root.to_s) do |root_fd|
+          opened = false
+          with_openat_fd(root_fd, run_id) do |run_fd|
+            opened = true
+            append_audit_fd(run_fd, entry)
+          end
+          unless opened
+            result = NativeCleanup.mkdirat(root_fd, run_id.to_s, 0o700)
+            unless result.zero? || cleanup_errno == Errno::EEXIST::Errno
+              raise Cyborg::UnsafeArtifact.new("bridge.unsafe_file", exit_status: 65)
+            end
+            with_openat_fd(root_fd, run_id) { |run_fd| append_audit_fd(run_fd, entry) }
+          end
+        end
       end
 
       def read_bounded_bytes_fd(parent_fd, filename, allow_missing: false)
