@@ -7,7 +7,6 @@ class CyborgRepeatedRunTest < Minitest::Test
     tmpdir = Dir.mktmpdir("cyborg-repeated-run")
     db = Cyborg::Database.connect(path: File.join(tmpdir, "cyborg.sqlite3"))
     db.migrate!
-    db[:runs].insert(id: "run-1", profile: "default", execution_mode: "interactive", status: "completed", window_start_utc: "2026-08-13T11:00:00Z", window_end_utc: "2026-08-13T12:00:00Z", display_timezone: "UTC", configuration_fingerprint: "config", created_at: "2026-08-13T11:00:00Z", completed_at: "2026-08-13T12:00:00Z")
     task = Cyborg::Analysis::AnalysisTask.new(
       id: "task-1", capability: "cheap_structured_extraction", dependency_ids: [], required: true,
       packet_fingerprint: "packet-fp", maximum_output_bytes: 8192,
@@ -24,18 +23,19 @@ class CyborgRepeatedRunTest < Minitest::Test
         @backend.analyze(**kwargs)
       end
     end.new(File.expand_path("../fixtures/e2e/analysis-result.json", __dir__))
-    repository = Cyborg::Repositories::AnalysisRepository.new(db)
-    100.times do
-      cached = repository.find_cached(task_id: task.id, input_fingerprint: task.packet_fingerprint)
-      unless cached
-        outcome = backend.analyze(packet: {"run_id" => "run-1"}, task:, reservation: task.reservation)
-        repository.create(id: "cached-result", run_id: "run-1", task_id: task.id, input_fingerprint: task.packet_fingerprint,
-                          output_fingerprint: Cyborg::Bridge::CanonicalJSON.sha256(outcome.to_h), validation_status: "valid",
-                          result_json: Cyborg::Bridge::CanonicalJSON.dump(outcome.to_h), created_at: "2026-08-13T12:00:00Z")
-      end
+    orchestrator = Cyborg::Analysis::Orchestrator.new(db:, now: Time.iso8601("2026-08-13T12:00:00Z"))
+    100.times do |index|
+      run_id = "run-#{index + 1}"
+      db[:runs].insert(id: run_id, profile: "default", execution_mode: "interactive", status: "completed", window_start_utc: "2026-08-13T11:00:00Z", window_end_utc: "2026-08-13T12:00:00Z", display_timezone: "UTC", configuration_fingerprint: "config", created_at: "2026-08-13T11:00:00Z", completed_at: "2026-08-13T12:00:00Z")
+      task_payload = task.to_h.transform_keys(&:to_s).merge("reservation" => task.reservation.to_h.transform_keys(&:to_s))
+      packet = {"run_id" => run_id, "records" => [], "tasks" => [task_payload], "allowed_action_kinds" => ["review"],
+                "maximum_claim_count" => 25, "maximum_output_bytes" => 8_192}
+      orchestrator.execute(run_id:, packet:, tasks: [task], backend:, ceiling_micros: 2)
     end
     assert_equal 1, backend.calls
     assert_equal 1, db[:analysis_results].count
+    assert_equal 100, db[:usage_records].where(task_id: task.id).count
+    assert_equal 100, db[:usage_records].where(task_id: task.id).count
   ensure
     db&.disconnect
     FileUtils.remove_entry(tmpdir) if tmpdir

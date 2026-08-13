@@ -20,26 +20,25 @@ class CyborgV1AcceptanceTest < Minitest::Test
   end
 
   def test_one_hundred_identical_runs_reuse_validated_analysis
-    insert_run("run-1")
     task = Cyborg::Analysis::AnalysisTask.new(
       id: "fixture-task", capability: "cheap_structured_extraction", dependency_ids: [], required: true,
       packet_fingerprint: "packet-fingerprint", maximum_output_bytes: 8_192,
       reservation: Cyborg::Analysis::Reservation.new(cost_micros: 1)
     )
-    packet = {"run_id" => "run-1", "records" => [], "tasks" => [task.to_h]}
+    task_payload = task.to_h.transform_keys(&:to_s).merge("reservation" => task.reservation.to_h.transform_keys(&:to_s))
+    packet = {"records" => [], "tasks" => [task_payload], "allowed_action_kinds" => ["review"],
+              "maximum_claim_count" => 25, "maximum_output_bytes" => 8_192}
     backend = CountingFixtureBackend.new(path: File.expand_path("../fixtures/e2e/analysis-result.json", __dir__))
-    repository = Cyborg::Repositories::AnalysisRepository.new(@db)
-    100.times do
-      cached = repository.find_cached(task_id: task.id, input_fingerprint: task.packet_fingerprint)
-      unless cached
-        outcome = backend.analyze(packet:, task:, reservation: task.reservation)
-        repository.create(id: "analysis-1", run_id: "run-1", task_id: task.id, input_fingerprint: task.packet_fingerprint,
-                          output_fingerprint: Cyborg::Bridge::CanonicalJSON.sha256(outcome.to_h), validation_status: "valid",
-                          result_json: Cyborg::Bridge::CanonicalJSON.dump(outcome.to_h), created_at: NOW)
-      end
+    orchestrator = Cyborg::Analysis::Orchestrator.new(db: @db, now: Time.iso8601(NOW))
+    100.times do |index|
+      run_id = "run-#{index + 1}"
+      insert_run(run_id)
+      execution = orchestrator.execute(run_id:, packet: packet.merge("run_id" => run_id), tasks: [task], backend:, ceiling_micros: 2)
+      assert_equal [task.id], execution.outcomes.keys
     end
     assert_equal 1, backend.calls
     assert_equal 1, @db[:analysis_results].count
+    assert_equal 100, @db[:usage_records].where(task_id: task.id).count
   end
 
   def test_github_failure_preserves_local_git_and_publishes_degraded_source_health
@@ -100,13 +99,21 @@ class CyborgV1AcceptanceTest < Minitest::Test
   end
 
   def test_failed_runs_advance_neither_latest_renderable_pointer_nor_source_baseline
+    old = insert_run("run-old", status: "completed", completed_at: "2026-08-13T11:00:00Z")
+    @db[:source_snapshots].insert(id: "snapshot-old", run_id: old.id, source_name: "github", account_identity: "me",
+                                  adapter_version: "1", started_at: "2026-08-13T10:59:00Z", completed_at: "2026-08-13T11:00:00Z",
+                                  status: "healthy", data_status: "fresh", cursor_disposition: "advance", proposed_cursor: "old-cursor", record_count: 0)
+    @db[:source_baselines].insert(source_name: "github", account_identity: "me", activated_snapshot_id: "snapshot-old",
+                                  activated_at: "2026-08-13T11:00:00Z", cursor: "old-cursor")
+    @db[:application_state].insert(key: "latest_renderable_run_id", value: old.id, updated_at: "2026-08-13T11:00:00Z")
     run = insert_run("run-1")
     insert_snapshot(run.id, "github", status: "healthy", data_status: "fresh", proposed_cursor: "g-2", cursor_disposition: "advance")
     assert_raises(Sequel::ConstraintViolation) do
       Cyborg::Runs::Publisher.new(db: @db, now: Time.iso8601(LATER)).fail_after!(:presentation_insert).publish(run:, analysis: {"claims" => [], "usage" => {"certainty" => "unknown", "records" => []}})
     end
-    assert_nil @db[:application_state].where(key: "latest_renderable_run_id").first
-    assert_nil @db[:source_baselines].first
+    assert_equal "run-old", @db[:application_state].where(key: "latest_renderable_run_id").get(:value)
+    assert_equal "old-cursor", @db[:source_baselines].where(source_name: "github", account_identity: "me").get(:cursor)
+    assert_equal "snapshot-old", @db[:source_baselines].where(source_name: "github", account_identity: "me").get(:activated_snapshot_id)
     assert_equal "running", @db[:runs].where(id: run.id).get(:status)
   end
 
@@ -135,15 +142,29 @@ class CyborgV1AcceptanceTest < Minitest::Test
     evidence("e1", NOW)
     action = reconcile(run, evidence_ids: ["e1"])
     barrier = Queue.new
+    attempted = Queue.new
     writer = Thread.new do
       barrier.pop
-      Cyborg::Actions::StateMachine.new(db: @db, now: Time.iso8601(LATER)).transition(action_id: action.id, command: "acknowledge", origin: "manual")
+      attempted << true
+      loop do
+        begin
+          Cyborg::Actions::StateMachine.new(db: @db, now: Time.iso8601(LATER)).transition(action_id: action.id, command: "acknowledge", origin: "manual")
+          break
+        rescue Sequel::DatabaseError => error
+          raise unless error.message.include?("locked")
+          sleep 0.005
+        end
+      end
     end
+    publisher_thread = Thread.new { publish(run) }
     barrier << true
+    attempted.pop
+    result = publisher_thread.value
     writer.join
-    result = publish(run)
     item = result.view_model.fetch("sections").flat_map { |section| section.fetch("items") }.find { |value| value["id"] == action.id }
-    assert_equal "acknowledged", item.fetch("state")
+    assert_includes %w[open acknowledged], item.fetch("state")
+    assert_equal "acknowledged", @db[:inferred_actions].where(id: action.id).get(:user_state)
+    assert_equal 1, @db[:inferred_actions].where(id: action.id).get(:state_version)
   end
 
   def test_budget_exhaustion_skips_optional_work_and_keeps_reservation_auditable
@@ -165,6 +186,25 @@ class CyborgV1AcceptanceTest < Minitest::Test
                     cost_micros: 80, certainty: "provider_reported")
     assert_equal 80, recorder.summary(run_id: "run-1").reported_cost_micros
     assert_empty graph.ready_tasks(completed_ids: ["task-0"], launched_ids: ["task-1"])
+
+    executable_tasks = [
+      tasks.first.with(reservation: Cyborg::Analysis::Reservation.new(cost_micros: 40)),
+      tasks.last.with(required: false, reservation: Cyborg::Analysis::Reservation.new(cost_micros: 80))
+    ]
+    backend = CountingFixtureBackend.new(path: File.expand_path("../fixtures/e2e/analysis-result.json", __dir__))
+    executable_packet_tasks = executable_tasks.map do |task|
+      task.to_h.transform_keys(&:to_s).merge("reservation" => task.reservation.to_h.transform_keys(&:to_s))
+    end
+    execution = Cyborg::Analysis::Orchestrator.new(db: @db, now: Time.iso8601(NOW)).execute(
+      run_id: "run-1", packet: {"run_id" => "run-1", "records" => [], "tasks" => executable_packet_tasks,
+                                 "allowed_action_kinds" => ["review"], "maximum_claim_count" => 25,
+                                 "maximum_output_bytes" => 8_192}, tasks: executable_tasks, backend:, ceiling_micros: 80
+    )
+    assert_equal ["task-0"], execution.launched_task_ids
+    assert_empty execution.reservation_plan.launchable_optional
+    assert_equal 1, backend.calls
+    assert_equal "analysis-run-1", @db[:usage_records].where(id: "analysis-run-1").get(:id)
+    assert_equal "analysis-run-1", @db[:usage_records].where(id: "analysis-run-1-task-0").get(:parent_session_id)
   end
 
   def test_markdown_and_json_renderers_preserve_persisted_semantics
@@ -175,7 +215,7 @@ class CyborgV1AcceptanceTest < Minitest::Test
     json = Cyborg::Presentation::JsonRenderer.new.render(result.view_model)
     parsed = JSON.parse(json)
     assert_equal normalize_render(parsed), normalize_render(result.view_model)
-    result.view_model.fetch("sections").flat_map { |section| section.fetch("items") }.each { |item| assert_includes markdown, item.fetch("id") }
+    assert_equal normalize_render(parsed), parse_markdown_render(markdown)
   end
 
   def test_complete_fixture_retrieval_snapshot_packet_validation_reconciliation_publication_flow
@@ -198,7 +238,22 @@ class CyborgV1AcceptanceTest < Minitest::Test
     packet_path = JSON.parse(packet_output).fetch("output")
     packet = JSON.parse(File.read(packet_path)).fetch("payload")
     assert_equal run_id, packet.fetch("run_id")
-    analysis_payload = {"claims" => [], "task_results" => [{"id" => "fixture-task", "task_id" => "fixture-task", "capability" => "cheap_structured_extraction", "dependency_ids" => [], "status" => "succeeded", "claims" => [], "usage" => nil}], "usage" => {"records" => [], "certainty" => "unknown"}, "backend_metadata" => {"backend" => "fixture"}}
+    analysis_db = Cyborg::Database.connect(path: File.join(env.fetch("CYBORG_STATE_DIR"), "cyborg.sqlite3"))
+    task = Cyborg::Analysis::AnalysisTask.new(
+      id: "fixture-task", capability: "cheap_structured_extraction", dependency_ids: [], required: true,
+      packet_fingerprint: "fixture-packet", maximum_output_bytes: 8_192,
+      reservation: Cyborg::Analysis::Reservation.new(cost_micros: 1)
+    )
+    backend = Cyborg::Analysis::FixtureBackend.new(path: File.expand_path("../fixtures/e2e/analysis-result.json", __dir__))
+    execution = Cyborg::Analysis::Orchestrator.new(db: analysis_db, now: Time.iso8601(NOW)).execute(
+      run_id:, packet:, tasks: [task], backend:, ceiling_micros: 2
+    )
+    assert_equal [task.id], execution.launched_task_ids
+    outcome = execution.outcomes.fetch(task.id)
+    analysis_payload = {"claims" => outcome.claims, "task_results" => [{"id" => task.id, "task_id" => task.id,
+      "capability" => task.capability, "dependency_ids" => [], "status" => "succeeded", "claims" => [], "usage" => nil}],
+      "usage" => {"records" => [], "certainty" => "unknown"}, "backend_metadata" => outcome.backend_metadata}
+    analysis_db.disconnect
     analysis_path = File.join(@artifact_dir, run_id, "analysis-result.json")
     store.write(run_id:, filename: "analysis-result.json", envelope: Cyborg::Bridge::Envelope.build(type: "analysis_result", run_id:, payload: analysis_payload, created_at: Time.iso8601(NOW)))
     status, output, error = cli(["record-result", "--config", env.fetch("CYBORG_CONFIG"), "--run", run_id, "--lease-file", prepared.fetch("lease_file"), "--input", analysis_path], env:)
@@ -250,7 +305,39 @@ class CyborgV1AcceptanceTest < Minitest::Test
   end
 
   def normalize_render(view)
-    view.reject { |key, _| %w[generated_at run].include?(key) }
+    {
+      "sections" => view.fetch("sections").map do |section|
+        {"name" => section.fetch("name"), "items" => section.fetch("items").map do |item|
+          {"id" => item.fetch("id"), "state" => item.fetch("state", nil), "links" => Array(item.fetch("links", [])).sort}
+        end}
+      end,
+      "warnings" => Array(view.fetch("warnings", []))
+    }
+  end
+
+  def parse_markdown_render(markdown)
+    sections = []
+    warnings = []
+    current = nil
+    markdown.each_line do |line|
+      line = line.chomp
+      if line.start_with?("## ")
+        name = line.delete_prefix("## ").sub("⚠️ ", "")
+        if name == "WARNINGS"
+          current = nil
+        else
+          current = {"name" => name, "items" => []}
+          sections << current
+        end
+      elsif line.start_with?("- ") && current
+        match = line.match(/\[(?<id>[^\]]+)\].*— (?<state>\S+)/)
+        next unless match
+        current.fetch("items") << {"id" => match[:id], "state" => match[:state], "links" => line.scan(/\[source\]\(([^)]+)\)/).flatten.sort}
+      elsif line.start_with?("- ") && !current
+        warnings << line.delete_prefix("- ")
+      end
+    end
+    {"sections" => sections, "warnings" => warnings}
   end
 
   def cli_env

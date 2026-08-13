@@ -9,6 +9,12 @@ configuration. Resolve the active path with:
 bin/cyborg config path
 ```
 
+The example enables the bounded fixture source. Copy
+`test/fixtures/sources/fixture-records.json` beside the copied configuration
+as `~/.config/cyborg/fixture-records.json`, or replace that value with an
+absolute local fixture path; the config does not depend on the repository
+working directory.
+
 The first command that opens state applies timestamped SQLite migrations. To
 migrate explicitly, set `CYBORG_DATABASE` or use the configured state path:
 

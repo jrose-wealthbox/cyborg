@@ -34,7 +34,10 @@ easter = false
 enabled = true
 adapter = "fixture"
 account = "fixture"
-path = "test/fixtures/sources/fixture-records.json"
+# Copy the fixture file to this user-local path for an offline smoke run. The
+# leading ~ is expanded by CYBORG, so this config remains usable when copied
+# outside the repository. Replace it with an absolute path for another file.
+path = "~/.config/cyborg/fixture-records.json"
 [sources.fixture.limits]
 max_records = 2
 max_response_bytes = 65536

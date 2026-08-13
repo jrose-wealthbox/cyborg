@@ -14,6 +14,7 @@ the safe example configuration, and point `CYBORG_CONFIG` at the copy:
 bundle install
 mkdir -p ~/.config/cyborg
 cp config/example.toml ~/.config/cyborg/config.toml
+cp test/fixtures/sources/fixture-records.json ~/.config/cyborg/fixture-records.json
 export CYBORG_CONFIG="$HOME/.config/cyborg/config.toml"
 bin/cyborg config path
 ```

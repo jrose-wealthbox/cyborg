@@ -181,8 +181,10 @@ module Cyborg
             timeout: registration.limits["max_seconds"] || LocalGitAdapter::DEFAULT_TIMEOUT
           )
         when "fixture"
+          fixture_path = raw["path"] || raw["fixture_path"] || FixtureAdapter::DEFAULT_PATH
+          fixture_path = File.join(Dir.home, fixture_path.delete_prefix("~/")) if fixture_path.to_s.start_with?("~/")
           FixtureAdapter.new(
-            path: raw["path"] || raw["fixture_path"] || FixtureAdapter::DEFAULT_PATH,
+            path: fixture_path,
             source_name: registration.source_name, account_identity: registration.account_identity,
             adapter_version: registration.adapter_version
           )
