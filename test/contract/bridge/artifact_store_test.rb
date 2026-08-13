@@ -177,6 +177,44 @@ class BridgeArtifactStoreTest < Minitest::Test
     assert_equal "bridge.unsafe_file", error.code
   end
 
+  def test_cleanup_remains_anchored_when_run_path_is_replaced_after_metadata_validation
+    old_envelope = Cyborg::Bridge::Envelope.build(
+      type: "analysis_result", run_id: "swap-run", payload: {"ok" => true},
+      created_at: Time.utc(2026, 8, 12, 18)
+    )
+    old_path = @store.write(run_id: "swap-run", filename: "old.json", envelope: old_envelope)
+    outside = Pathname(@tmpdir).join("outside")
+    FileUtils.mkdir_p(outside)
+    outside_file = outside.join("old.json")
+    FileUtils.cp(old_path, outside_file)
+    run_directory = old_path.dirname
+    saved_directory = Pathname(@tmpdir).join("saved-run")
+
+    @store.singleton_class.prepend(Module.new do
+      define_method(:metadata_for_fd) do |run_fd:, filename:, expected_run_id:|
+        metadata = super(run_fd:, filename:, expected_run_id:)
+        return metadata unless expected_run_id == "swap-run"
+        File.rename(run_directory, saved_directory)
+        File.symlink(outside, run_directory)
+        metadata
+      end
+    end)
+
+    @store.cleanup!(now: Time.utc(2026, 8, 12, 20), retention_seconds: 60)
+
+    assert_path_exists outside_file
+    refute_path_exists saved_directory.join("old.json")
+    assert_path_exists saved_directory.join("artifact-audit.json")
+    assert_path_exists run_directory
+    assert File.symlink?(run_directory)
+    audit = JSON.parse(File.read(saved_directory.join("artifact-audit.json")))
+    assert_equal "swap-run", audit.fetch("entries").first.fetch("run_id")
+  ensure
+    FileUtils.remove_entry(run_directory) if run_directory && File.symlink?(run_directory)
+    FileUtils.remove_entry(saved_directory) if saved_directory && File.exist?(saved_directory)
+    FileUtils.remove_entry(outside) if outside && File.exist?(outside)
+  end
+
   def test_cleanup_rejects_an_oversized_existing_audit_file_before_parsing
     audit_path = @valid_path.dirname.join("artifact-audit.json")
     File.binwrite(audit_path, "{" + ("x" * 4_096))

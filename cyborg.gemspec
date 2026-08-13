@@ -24,6 +24,7 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   spec.add_dependency "sequel"
+  spec.add_dependency "fiddle"
   spec.add_dependency "sqlite3"
   spec.add_dependency "toml-rb"
   spec.add_dependency "tzinfo"
