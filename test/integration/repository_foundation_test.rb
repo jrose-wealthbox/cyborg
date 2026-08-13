@@ -13,6 +13,7 @@ class CyborgRepositoryFoundationTest < Minitest::Test
     @runs = Cyborg::Repositories::RunRepository.new(@db)
     @records = Cyborg::Repositories::RecordRepository.new(@db)
     @cache = Cyborg::Repositories::CacheRepository.new(@db)
+    @actions = Cyborg::Repositories::ActionRepository.new(@db)
     insert_run("run-1", status: "completed")
     insert_source_snapshot
   end
@@ -114,6 +115,42 @@ class CyborgRepositoryFoundationTest < Minitest::Test
     end
   end
 
+  def test_action_alias_rejects_noncanonical_created_at
+    insert_action_fixture
+    assert_raises(Cyborg::PersistenceError) do
+      @actions.add_alias(
+        subject_key: "legacy-subject", series_id: "series-1", identity_version: 1,
+        created_at: "2026-08-11T20:00:00-04:00"
+      )
+    end
+  end
+
+  def test_action_evidence_rejects_noncanonical_first_seen_at
+    insert_action_fixture
+    assert_raises(Cyborg::PersistenceError) do
+      @actions.attach_evidence(
+        action_id: "action-1", evidence_id: "evidence-1",
+        attributes: {
+          first_seen_run_id: "run-1", last_seen_run_id: "run-1",
+          first_seen_at: "2026-08-11T20:00:00-04:00", last_seen_at: LATER
+        }
+      )
+    end
+  end
+
+  def test_action_evidence_rejects_noncanonical_last_seen_at
+    insert_action_fixture
+    assert_raises(Cyborg::PersistenceError) do
+      @actions.attach_evidence(
+        action_id: "action-1", evidence_id: "evidence-1",
+        attributes: {
+          first_seen_run_id: "run-1", last_seen_run_id: "run-1",
+          first_seen_at: NOW, last_seen_at: "2026-08-11T20:00:00-04:00"
+        }
+      )
+    end
+  end
+
   private
 
   def insert_run(id, status: "running")
@@ -129,6 +166,28 @@ class CyborgRepositoryFoundationTest < Minitest::Test
       id: "snapshot-1", run_id: "run-1", source_name: "github", account_identity: "me@example.com",
       adapter_version: "1", started_at: NOW, completed_at: LATER, status: "healthy",
       data_status: "fresh", cursor_disposition: "advance", record_count: 0
+    )
+  end
+
+  def insert_action_fixture
+    @records.create_or_update_record(record_attributes(id: "record-1"))
+    @records.create_version(
+      id: "version-1", observed_record_id: "record-1", content_fingerprint: "evidence-fingerprint",
+      payload_json: "{}", created_at: NOW
+    )
+    @records.create_evidence(
+      id: "evidence-1", observed_record_version_id: "version-1", source_url: "https://github.com/x/y/42",
+      source_label: "GitHub", excerpt: "review", evidence_at: NOW, relation: "supports"
+    )
+    @db[:action_series].insert(
+      id: "series-1", current_subject_key: "subject", identity_version: 1,
+      action_kind: "respond", canonical_subject_type: "github_pr", canonical_subject_id: "42",
+      created_at: NOW, updated_at: NOW
+    )
+    @db[:inferred_actions].insert(
+      id: "action-1", series_id: "series-1", occurrence_number: 1, inference_status: "active",
+      action_kind: "respond", summary: "Reply", confidence: 0.9, user_state: "open",
+      state_version: 0, first_seen_at: NOW, last_seen_at: NOW
     )
   end
 

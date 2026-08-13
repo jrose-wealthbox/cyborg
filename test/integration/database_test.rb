@@ -36,7 +36,12 @@ class CyborgDatabaseTest < Minitest::Test
 
   def test_schema_uses_strict_tables_when_sqlite_supports_them
     sql = @db.fetch(Sequel.lit("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'")).get(:sql)
-    assert_match(/\bSTRICT\s*\z/i, sql)
+    version = @db.fetch(Sequel.lit("SELECT sqlite_version() AS version")).get(:version)
+    if Cyborg::Database.strict_tables_supported?(version)
+      assert_match(/\bSTRICT\s*\z/i, sql)
+    else
+      refute_match(/\bSTRICT\s*\z/i, sql)
+    end
   end
 
   def test_run_lease_is_a_singleton_and_foreign_keys_are_enforced

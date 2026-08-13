@@ -25,7 +25,9 @@ module Cyborg
       end
 
       def add_alias(attributes)
-        db[:action_key_aliases].insert(attributes.to_h)
+        attrs = attributes.to_h
+        validate_timestamps!(attrs, %i[created_at])
+        db[:action_key_aliases].insert(attrs)
         true
       end
 
@@ -53,7 +55,9 @@ module Cyborg
       end
 
       def attach_evidence(action_id:, evidence_id:, attributes: {})
-        db[:action_evidence].insert({action_id:, evidence_id:}.merge(attributes.to_h))
+        attrs = {action_id:, evidence_id:}.merge(attributes.to_h)
+        validate_timestamps!(attrs, %i[first_seen_at last_seen_at])
+        db[:action_evidence].insert(attrs)
         true
       end
 
