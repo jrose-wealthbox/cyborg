@@ -228,6 +228,9 @@ module Cyborg
         if %w[provider_reported locally_estimated].include?(certainty.to_s) && cost.nil?
           raise ArgumentError, "#{certainty} usage requires known cost_micros"
         end
+        if certainty.to_s == "reserved" && [input, output, cost].any? { |value| !value.nil? }
+          raise ArgumentError, "reserved usage cannot include actual tokens or cost"
+        end
         values[9] = certainty.to_s
         values[10] = Contracts.canonical_time(created, "created_at") if created
         values

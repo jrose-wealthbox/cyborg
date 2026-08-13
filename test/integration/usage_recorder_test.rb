@@ -98,6 +98,45 @@ class CyborgUsageRecorderTest < Minitest::Test
     end
   end
 
+  def test_rejects_reserved_certainty_with_actual_usage
+    assert_raises(ArgumentError) do
+      Cyborg::Analysis::UsageRecord.new(
+        id: "known-cost", run_id: "run-1", reserved_cost_micros: 0,
+        cost_micros: 1_500, certainty: "reserved", created_at: @recorder.now
+      )
+    end
+
+    assert_raises(ArgumentError) do
+      Cyborg::Analysis::UsageRecord.new(
+        id: "known-tokens", run_id: "run-1", reserved_cost_micros: 0,
+        input_tokens: 10, certainty: "reserved", created_at: @recorder.now
+      )
+    end
+  end
+
+  def test_update_requires_explicit_certainty_when_usage_arrives
+    row = @recorder.record(
+      run_id: "run-1", session_id: "pending-session",
+      reserved_cost_micros: 4_000, certainty: "reserved"
+    )
+
+    assert_raises(ArgumentError) do
+      @recorder.update(session_id: row.session_id, cost_micros: 1_500)
+    end
+    unchanged = @recorder.find(row.id)
+    assert_nil unchanged.cost_micros
+    assert_equal 4_000, unchanged.reserved_cost_micros
+    assert_equal "reserved", unchanged.certainty
+
+    updated = @recorder.update(
+      session_id: row.session_id, cost_micros: 1_500,
+      certainty: "provider_reported"
+    )
+    assert_equal 1_500, updated.cost_micros
+    assert_equal 0, updated.reserved_cost_micros
+    assert_equal 1_500, @recorder.summary(run_id: "run-1").provider_reported_cost_micros
+  end
+
   def test_rejects_parent_session_from_another_run
     @db[:runs].insert(
       id: "run-2", profile: "default", execution_mode: "interactive", status: "running",
