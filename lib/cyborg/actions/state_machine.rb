@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "time"
+require "date"
 
 require_relative "../analysis/contracts"
 require_relative "../clock"
@@ -16,6 +17,7 @@ module Cyborg
         "dismiss" => {from: %w[open acknowledged snoozed], to: "dismissed"},
         "reopen" => {from: %w[acknowledged snoozed done dismissed], to: "open"}
       }.freeze
+      RFC3339_DATETIME = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)\z/.freeze
       USER_STATES = %w[open acknowledged snoozed done dismissed].freeze
 
       attr_reader :db, :now
@@ -83,8 +85,13 @@ module Cyborg
       def required_until(value)
         fail_action("actions.snooze_requires_until") if value.nil?
 
+        unless value.is_a?(Time) || (value.is_a?(String) && RFC3339_DATETIME.match?(value))
+          fail_action("actions.invalid_until")
+        end
+        DateTime.iso8601(value.to_s) unless value.is_a?(Time)
+
         canonical_time(value, "until_time").utc.iso8601
-      rescue ArgumentError, TypeError
+      rescue ArgumentError, TypeError, Date::Error
         fail_action("actions.invalid_until")
       end
 

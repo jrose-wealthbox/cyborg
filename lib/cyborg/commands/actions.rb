@@ -16,7 +16,7 @@ module Cyborg
         end
         options = parse_options(
           argv,
-          optional: %w[origin until]
+          optional: operation == "snooze" ? %w[origin until] : %w[origin]
         )
         action = Cyborg::Actions::StateMachine.new(db:, clock: container.clock).transition(
           action_id:, command: operation, until_time: options["until"], origin: options.fetch("origin", "cli")

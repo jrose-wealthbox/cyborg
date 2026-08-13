@@ -82,6 +82,43 @@ class CyborgActionCLITest < Minitest::Test
     assert_equal "done", state
   end
 
+  def test_snooze_rejects_timezone_less_invalid_calendar_and_trailing_timestamps
+    invalid_values = [
+      "2026-08-14T12:00:00",
+      "2026-02-30T12:00:00Z",
+      "2026-08-14T12:00:00Z trailing"
+    ]
+
+    invalid_values.each do |until_time|
+      result = run_cli("actions", "snooze", @action_ids.fetch(0), "--until", until_time)
+      assert_equal 64, result[:status]
+      assert_empty result[:stdout]
+      assert_includes result[:stderr], "actions.invalid_until"
+    end
+
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    transitions = database.get_first_value(
+      "SELECT COUNT(*) FROM action_transitions WHERE action_id = ?", @action_ids.fetch(0)
+    )
+    state = database.get_first_value("SELECT user_state FROM inferred_actions WHERE id = ?", @action_ids.fetch(0))
+    database.close
+    assert_equal 0, transitions
+    assert_equal "open", state
+  end
+
+  def test_until_is_unsupported_for_non_snooze_actions_and_numeric_offset_is_valid
+    unsupported = run_cli("actions", "done", @action_ids.fetch(0), "--until", "2026-08-14T12:00:00Z")
+    assert_equal 64, unsupported[:status]
+    assert_empty unsupported[:stdout]
+    assert_includes unsupported[:stderr], "cli.unsupported_option"
+
+    valid = run_cli("actions", "snooze", @action_ids.fetch(0), "--until", "2026-08-14T12:00:00+02:00")
+    assert_equal 0, valid[:status], valid[:stderr]
+    action = JSON.parse(valid[:stdout]).fetch("action")
+    assert_equal "snoozed", action.fetch("user_state")
+    assert_equal "2026-08-14T10:00:00Z", action.fetch("snoozed_until")
+  end
+
   private
 
   def write_config(path)
