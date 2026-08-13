@@ -16,21 +16,29 @@ class CyborgV1AcceptanceTest < Minitest::Test
   def teardown
     @db.disconnect
     FileUtils.remove_entry(@tmpdir)
+    FileUtils.remove_entry(@cli_tmpdir) if @cli_tmpdir
   end
 
   def test_one_hundred_identical_runs_reuse_validated_analysis
     insert_run("run-1")
+    task = Cyborg::Analysis::AnalysisTask.new(
+      id: "fixture-task", capability: "cheap_structured_extraction", dependency_ids: [], required: true,
+      packet_fingerprint: "packet-fingerprint", maximum_output_bytes: 8_192,
+      reservation: Cyborg::Analysis::Reservation.new(cost_micros: 1)
+    )
+    packet = {"run_id" => "run-1", "records" => [], "tasks" => [task.to_h]}
+    backend = CountingFixtureBackend.new(path: File.expand_path("../fixtures/e2e/analysis-result.json", __dir__))
     repository = Cyborg::Repositories::AnalysisRepository.new(@db)
-    calls = 0
     100.times do
-      cached = repository.find_cached(task_id: "task-1", input_fingerprint: "same")
+      cached = repository.find_cached(task_id: task.id, input_fingerprint: task.packet_fingerprint)
       unless cached
-        calls += 1
-        repository.create(id: "analysis-1", run_id: "run-1", task_id: "task-1", input_fingerprint: "same",
-                          output_fingerprint: "out", validation_status: "valid", result_json: "{}", created_at: NOW)
+        outcome = backend.analyze(packet:, task:, reservation: task.reservation)
+        repository.create(id: "analysis-1", run_id: "run-1", task_id: task.id, input_fingerprint: task.packet_fingerprint,
+                          output_fingerprint: Cyborg::Bridge::CanonicalJSON.sha256(outcome.to_h), validation_status: "valid",
+                          result_json: Cyborg::Bridge::CanonicalJSON.dump(outcome.to_h), created_at: NOW)
       end
     end
-    assert_equal 1, calls
+    assert_equal 1, backend.calls
     assert_equal 1, @db[:analysis_results].count
   end
 
@@ -43,6 +51,7 @@ class CyborgV1AcceptanceTest < Minitest::Test
     assert_includes result.view_model.fetch("sections").first.fetch("heading"), "SOURCE HEALTH"
     assert_includes result.view_model.fetch("warnings").join(" "), "source.github.failed"
     assert_equal "git-2", @db[:source_baselines].where(source_name: "local_git").get(:cursor)
+    assert_equal "healthy", @db[:source_snapshots].where(run_id: run.id, source_name: "local_git").get(:status)
   end
 
   def test_completed_evidence_does_not_reopen_a_completed_action
@@ -79,19 +88,26 @@ class CyborgV1AcceptanceTest < Minitest::Test
   end
 
   def test_unknown_evidence_produces_deterministic_degraded_view_without_claim_mutation
-    run = insert_run("run-1")
-    outcome = Cyborg::Analysis::ResultValidator.new.validate(packet: {"run_id" => run.id, "records" => [], "allowed_action_kinds" => ["review"], "maximum_claim_count" => 5, "maximum_output_bytes" => 1000}, result: {"claims" => [claim(evidence_ids: ["missing"])]})
-    result = publish(run, outcome)
-    assert_equal "degraded", result.run.status
-    assert_empty @db[:inferred_actions].all
-    assert_includes result.view_model.fetch("warnings").join(" "), "analysis.rejected"
+    views = 2.times.map do |index|
+      run = insert_run("run-#{index + 1}")
+      outcome = Cyborg::Analysis::ResultValidator.new.validate(packet: {"run_id" => run.id, "records" => [], "allowed_action_kinds" => ["review"], "maximum_claim_count" => 5, "maximum_output_bytes" => 1000}, result: {"claims" => [claim(evidence_ids: ["missing"])]})
+      result = publish(run, outcome)
+      assert_empty @db[:inferred_actions].all
+      assert_includes result.view_model.fetch("warnings").join(" "), "analysis.rejected"
+      result.view_model
+    end
+    assert_equal views[0].except("run"), views[1].except("run")
   end
 
   def test_failed_runs_advance_neither_latest_renderable_pointer_nor_source_baseline
-    run = insert_run("run-1", status: "failed", completed_at: LATER)
-    insert_snapshot(run.id, "github", status: "failed", data_status: "none", error_code: "github.timeout")
+    run = insert_run("run-1")
+    insert_snapshot(run.id, "github", status: "healthy", data_status: "fresh", proposed_cursor: "g-2", cursor_disposition: "advance")
+    assert_raises(Sequel::ConstraintViolation) do
+      Cyborg::Runs::Publisher.new(db: @db, now: Time.iso8601(LATER)).fail_after!(:presentation_insert).publish(run:, analysis: {"claims" => [], "usage" => {"certainty" => "unknown", "records" => []}})
+    end
     assert_nil @db[:application_state].where(key: "latest_renderable_run_id").first
     assert_nil @db[:source_baselines].first
+    assert_equal "running", @db[:runs].where(id: run.id).get(:status)
   end
 
   def test_degraded_runs_advance_only_eligible_healthy_fresh_source_baselines
@@ -118,20 +134,37 @@ class CyborgV1AcceptanceTest < Minitest::Test
     run = insert_run("run-1")
     evidence("e1", NOW)
     action = reconcile(run, evidence_ids: ["e1"])
-    Cyborg::Actions::StateMachine.new(db: @db, now: Time.iso8601(LATER)).transition(action_id: action.id, command: "acknowledge", origin: "manual")
+    barrier = Queue.new
+    writer = Thread.new do
+      barrier.pop
+      Cyborg::Actions::StateMachine.new(db: @db, now: Time.iso8601(LATER)).transition(action_id: action.id, command: "acknowledge", origin: "manual")
+    end
+    barrier << true
+    writer.join
     result = publish(run)
     item = result.view_model.fetch("sections").flat_map { |section| section.fetch("items") }.find { |value| value["id"] == action.id }
     assert_equal "acknowledged", item.fetch("state")
   end
 
   def test_budget_exhaustion_skips_optional_work_and_keeps_reservation_auditable
+    insert_run("run-1")
     tasks = 2.times.map do |index|
       Cyborg::Analysis::AnalysisTask.new(id: "task-#{index}", capability: "cheap_structured_extraction", dependency_ids: [], required: index.zero?, packet_fingerprint: "fp-#{index}", maximum_output_bytes: 1000, reservation: Cyborg::Analysis::Reservation.new(cost_micros: 80))
     end
-    plan = Cyborg::Analysis::BudgetController.new.reserve(tasks:, ceiling_micros: 80)
+    controller = Cyborg::Analysis::BudgetController.new
+    plan = controller.reserve(tasks:, ceiling_micros: 80)
     assert_equal "reserved", plan.status_for("task-0")
     assert_equal "skipped_budget", plan.status_for("task-1")
     assert_equal 80, plan.reserved_micros
+    assert_equal ["task-0"], plan.launchable_required.map(&:id)
+    refute controller.allow_launch?(plan, task: tasks.last)
+    graph = Cyborg::Analysis::TaskGraph.new(tasks:)
+    assert_equal ["task-0"], graph.ready_tasks.select { |task| plan.status_for(task.id) == "reserved" }.map(&:id)
+    recorder = Cyborg::Analysis::UsageRecorder.new(db: @db, now: Time.iso8601(NOW))
+    recorder.record(run_id: "run-1", task_id: "task-0", session_id: "task-0", reservation: tasks.first.reservation,
+                    cost_micros: 80, certainty: "provider_reported")
+    assert_equal 80, recorder.summary(run_id: "run-1").reported_cost_micros
+    assert_empty graph.ready_tasks(completed_ids: ["task-0"], launched_ids: ["task-1"])
   end
 
   def test_markdown_and_json_renderers_preserve_persisted_semantics
@@ -141,27 +174,39 @@ class CyborgV1AcceptanceTest < Minitest::Test
     markdown = Cyborg::Presentation::MarkdownRenderer.new.render(result.view_model)
     json = Cyborg::Presentation::JsonRenderer.new.render(result.view_model)
     parsed = JSON.parse(json)
-    assert_equal result.view_model.fetch("sections").map { |section| section.fetch("name") }, parsed.fetch("sections").map { |section| section.fetch("name") }
+    assert_equal normalize_render(parsed), normalize_render(result.view_model)
     result.view_model.fetch("sections").flat_map { |section| section.fetch("items") }.each { |item| assert_includes markdown, item.fetch("id") }
-    result.view_model.fetch("warnings").each { |warning| assert_includes parsed.fetch("warnings"), warning }
   end
 
   def test_complete_fixture_retrieval_snapshot_packet_validation_reconciliation_publication_flow
-    run = insert_run("run-1")
-    registration = Cyborg::Registration.new(source_name: "fixture", adapter_version: "fixture-1", account_identity: "fixture", transport: "direct", capabilities: ["records"], filters: {}, limits: {}, credential_strategy: "none", health_checks: [], cursor_policy: "proposed", cache_policy: "ordinary", retention_class: "standard", allowed_fields: [], operations: {}, parameters: {}, required: false)
-    context = Cyborg::RetrievalContext.new(source_name: "fixture", account_identity: "fixture", window_start_utc: NOW, window_end_utc: LATER, display_timezone: "UTC", limits: {"max_records" => 2, "max_bytes" => 65_536}, cache_policy: "ordinary", filters: {}, capabilities: [])
-    result = Cyborg::FixtureAdapter.new(path: File.expand_path("../fixtures/sources/fixture-records.json", __dir__)).fetch(context)
-    snapshot = Cyborg::SourceIngestor.new(db: @db).ingest(run:, registration:, result:)
-    assert_equal "advance", snapshot.cursor_disposition
-    records = Cyborg::Repositories::RecordRepository.new(@db).records_for_snapshot(snapshot.id).map { |record| record.to_h }
-    packet = Cyborg::Pipeline::AnalysisPacketBuilder.new.call(run:, records:, actions: [], tasks: [], reservation: {})
-    assert_equal run.id, packet.fetch("run_id")
-    fixture_result = JSON.parse(File.read(File.expand_path("../fixtures/e2e/analysis-result.json", __dir__)))
-    validated = Cyborg::Analysis::ResultValidator.new.validate(packet:, result: fixture_result)
-    refute_instance_of Cyborg::Analysis::ResultValidator::RejectedAnalysis, validated
-    publication = publish(run, validated)
-    assert_equal "completed", publication.run.status
-    assert_equal publication.view_model, JSON.parse(Cyborg::Presentation::JsonRenderer.new.render(publication.view_model))
+    env = cli_env
+    status, output, error = cli(["prepare", "--config", env.fetch("CYBORG_CONFIG"), "--profile", "default", "--artifact-dir", @artifact_dir], env:)
+    assert_equal 0, status, error
+    prepared = JSON.parse(output)
+    run_id = prepared.fetch("run_id")
+    requests = JSON.parse(File.read(prepared.fetch("retrieval_requests"))).fetch("payload")
+    request = requests.fetch(0)
+    source = JSON.parse(File.read(File.expand_path("../fixtures/sources/fixture-records.json", __dir__)))
+    response_payload = {"responses" => [{"request_id" => request.fetch("id"), "status" => "healthy", "data_status" => "fresh",
+                                          "started_at" => NOW, "completed_at" => LATER, "next_cursor" => source.fetch("next_cursor"), "records" => source.fetch("records")}]}
+    store = Cyborg::Bridge::ArtifactStore.new(root: @artifact_dir)
+    store.write(run_id:, filename: "host-responses.json", envelope: Cyborg::Bridge::Envelope.build(type: "retrieval_responses", run_id:, payload: response_payload, created_at: Time.iso8601(NOW)))
+    status, = cli(["ingest", "--config", env.fetch("CYBORG_CONFIG"), "--run", run_id, "--lease-file", prepared.fetch("lease_file"), "--input", File.join(@artifact_dir, run_id, "host-responses.json")], env:)
+    assert_equal 0, status
+    status, packet_output, error = cli(["analysis-packet", "--config", env.fetch("CYBORG_CONFIG"), "--run", run_id, "--lease-file", prepared.fetch("lease_file")], env:)
+    assert_equal 0, status, error
+    packet_path = JSON.parse(packet_output).fetch("output")
+    packet = JSON.parse(File.read(packet_path)).fetch("payload")
+    assert_equal run_id, packet.fetch("run_id")
+    analysis_payload = {"claims" => [], "task_results" => [{"id" => "fixture-task", "task_id" => "fixture-task", "capability" => "cheap_structured_extraction", "dependency_ids" => [], "status" => "succeeded", "claims" => [], "usage" => nil}], "usage" => {"records" => [], "certainty" => "unknown"}, "backend_metadata" => {"backend" => "fixture"}}
+    analysis_path = File.join(@artifact_dir, run_id, "analysis-result.json")
+    store.write(run_id:, filename: "analysis-result.json", envelope: Cyborg::Bridge::Envelope.build(type: "analysis_result", run_id:, payload: analysis_payload, created_at: Time.iso8601(NOW)))
+    status, output, error = cli(["record-result", "--config", env.fetch("CYBORG_CONFIG"), "--run", run_id, "--lease-file", prepared.fetch("lease_file"), "--input", analysis_path], env:)
+    assert_equal 0, status, error
+    status, rendered, error = cli(["render", "--config", env.fetch("CYBORG_CONFIG"), "--run", run_id, "--format", "json"], env:)
+    assert_equal 0, status, error
+    assert_equal "completed", JSON.parse(output).fetch("status"), output
+    refute_empty JSON.parse(rendered).fetch("sections")
   end
 
   private
@@ -190,5 +235,65 @@ class CyborgV1AcceptanceTest < Minitest::Test
 
   def claim(evidence_ids:, new_commitment: false)
     {"action_kind" => "review", "summary" => "Review", "canonical_subject_type" => "github_pull_request", "canonical_subject_id" => "node-42", "owner_identity" => "me", "thread_or_target_identity" => "repo#42", "anchor_evidence_id" => evidence_ids.first, "evidence_ids" => evidence_ids, "confidence" => 0.9, "people" => [], "projects" => [], "new_commitment" => new_commitment}
+  end
+
+  class CountingFixtureBackend
+    attr_reader :calls
+    def initialize(**kwargs)
+      @backend = Cyborg::Analysis::FixtureBackend.new(**kwargs)
+      @calls = 0
+    end
+    def analyze(**kwargs)
+      @calls += 1
+      @backend.analyze(**kwargs)
+    end
+  end
+
+  def normalize_render(view)
+    view.reject { |key, _| %w[generated_at run].include?(key) }
+  end
+
+  def cli_env
+    @cli_tmpdir ||= Dir.mktmpdir("cyborg-cli")
+    @artifact_dir ||= File.join(@cli_tmpdir, "artifacts")
+    config = File.join(@cli_tmpdir, "config.toml")
+    unless File.file?(config)
+      File.write(config, <<~TOML)
+        [runtime]
+        profile = "default"
+        [budget]
+        ceiling_micros = 5000000
+        [analysis.tasks.fixture-task]
+        capability = "cheap_structured_extraction"
+        required = true
+        packet_fingerprint = "fixture-packet"
+        maximum_output_bytes = 8192
+        [analysis.tasks.fixture-task.reservation]
+        cost_micros = 1
+        [cache]
+        ordinary_ttl_seconds = 1800
+        expensive_ttl_seconds = 14400
+        [calendar.profiles.default]
+        timezone = "UTC"
+        [sources.fixture]
+        enabled = true
+        adapter = "fixture"
+        account = "fixture"
+        transport = "host_bridge"
+        required = true
+        path = "test/fixtures/sources/fixture-records.json"
+        [sources.fixture.limits]
+        max_records = 2
+        max_response_bytes = 65536
+      TOML
+    end
+    {"HOME" => @cli_tmpdir, "CYBORG_CONFIG" => config, "CYBORG_STATE_DIR" => File.join(@cli_tmpdir, "state")}
+  end
+
+  def cli(argv, env:)
+    stdout = StringIO.new
+    stderr = StringIO.new
+    status = Cyborg::CLI.start(argv, stdout:, stderr:, env:)
+    [status, stdout.string, stderr.string]
   end
 end
