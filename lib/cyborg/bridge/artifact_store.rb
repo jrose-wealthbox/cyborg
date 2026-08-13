@@ -54,15 +54,8 @@ module Cyborg
       def read(path:, expected_type:, expected_run_id:)
         path = Pathname(path)
         ensure_path_is_beneath_root!(path)
-        stat = safe_lstat(path)
-        unless stat.file?
-          raise Cyborg::UnsafeArtifact.new("bridge.unsafe_file", exit_status: 65)
-        end
-        if stat.size > @max_bytes
-          raise Cyborg::UnsafeArtifact.new("bridge.oversized_file", exit_status: 65)
-        end
 
-        document = JSON.parse(File.binread(path.to_s))
+        document = JSON.parse(read_bounded_bytes(path))
         Envelope.validate!(document, expected_type: expected_type, expected_run_id: expected_run_id)
       rescue JSON::ParserError, EncodingError
         raise Cyborg::InvalidArtifact.new("bridge.invalid_json", exit_status: 65)
@@ -190,15 +183,10 @@ module Cyborg
       end
 
       def metadata_for(path, expected_run_id:)
-        stat = safe_lstat(path)
-        unless stat.file?
-          raise Cyborg::UnsafeArtifact.new("bridge.unsafe_file", exit_status: 65)
+        document = JSON.parse(read_bounded_bytes(path))
+        unless document.is_a?(Hash)
+          raise Cyborg::InvalidArtifact.new("bridge.invalid_envelope", exit_status: 65)
         end
-        if stat.size > @max_bytes
-          raise Cyborg::UnsafeArtifact.new("bridge.oversized_file", exit_status: 65)
-        end
-
-        document = JSON.parse(File.binread(path.to_s))
         Envelope.validate!(document, expected_type: document["artifact_type"], expected_run_id: expected_run_id)
         {
           "run_id" => document.fetch("run_id"),
@@ -222,19 +210,49 @@ module Cyborg
       end
 
       def read_audit_entries(path)
-        stat = safe_lstat(path, raise_on_missing: false)
-        return [] if stat.nil?
-        unless stat.file?
-          raise Cyborg::UnsafeArtifact.new("bridge.unsafe_file", exit_status: 65)
-        end
-        if stat.size > @max_bytes
-          raise Cyborg::UnsafeArtifact.new("bridge.oversized_file", exit_status: 65)
+        bytes = read_bounded_bytes(path, allow_missing: true)
+        return [] if bytes.nil?
+
+        document = JSON.parse(bytes)
+        unless document.is_a?(Hash)
+          raise Cyborg::InvalidArtifact.new("bridge.invalid_envelope", exit_status: 65)
         end
 
-        document = JSON.parse(File.binread(path.to_s))
-        document.fetch("entries", [])
+        entries = document.fetch("entries", [])
+        unless entries.is_a?(Array)
+          raise Cyborg::InvalidArtifact.new("bridge.invalid_envelope", exit_status: 65)
+        end
+
+        entries
       rescue JSON::ParserError, EncodingError, KeyError
         raise Cyborg::InvalidArtifact.new("bridge.invalid_json", exit_status: 65)
+      end
+
+      def read_bounded_bytes(path, allow_missing: false)
+        flags = File::RDONLY | File::NOFOLLOW | File::NONBLOCK
+        File.open(path.to_s, flags) do |file|
+          stat = file.stat
+          unless stat.file?
+            raise Cyborg::UnsafeArtifact.new("bridge.unsafe_file", exit_status: 65)
+          end
+          if stat.size > @max_bytes
+            raise Cyborg::UnsafeArtifact.new("bridge.oversized_file", exit_status: 65)
+          end
+
+          file.binmode
+          bytes = file.read(@max_bytes + 1) || "".b
+          if bytes.bytesize > @max_bytes
+            raise Cyborg::UnsafeArtifact.new("bridge.oversized_file", exit_status: 65)
+          end
+
+          bytes
+        end
+      rescue Errno::ENOENT
+        return nil if allow_missing
+
+        raise Cyborg::UnsafeArtifact.new("bridge.unsafe_file", exit_status: 65)
+      rescue Errno::ELOOP, Errno::ENOTDIR, Errno::EISDIR
+        raise Cyborg::UnsafeArtifact.new("bridge.unsafe_file", exit_status: 65)
       end
 
       def bounded_audit_bytes(entries, fallback)

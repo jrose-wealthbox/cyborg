@@ -43,6 +43,18 @@ class BridgeArtifactStoreTest < Minitest::Test
     assert_equal "bridge.unsafe_file", error.code
   end
 
+  def test_reader_rejects_a_file_replaced_with_a_symlink_at_read_boundary
+    backup_path = @valid_path.dirname.join("analysis-result.backup.json")
+    File.rename(@valid_path, backup_path)
+    File.symlink(backup_path, @valid_path)
+
+    error = assert_raises(Cyborg::UnsafeArtifact) do
+      @store.read(path: @valid_path, expected_type: "analysis_result", expected_run_id: RUN_ID)
+    end
+
+    assert_equal "bridge.unsafe_file", error.code
+  end
+
   def test_reader_rejects_a_symlinked_run_directory
     outside = Pathname(@tmpdir).join("outside")
     FileUtils.mkdir_p(outside)
@@ -189,6 +201,34 @@ class BridgeArtifactStoreTest < Minitest::Test
     end
 
     assert_equal "bridge.oversized_file", error.code
+  end
+
+  def test_cleanup_rejects_non_object_json_payload_without_raw_type_errors
+    non_object_path = @valid_path.dirname.join("array.json")
+    File.write(non_object_path, "[]")
+
+    error = assert_raises(Cyborg::InvalidArtifact) do
+      @store.cleanup!(now: Time.utc(2026, 8, 12, 20), retention_seconds: 60)
+    end
+
+    assert_equal "bridge.invalid_envelope", error.code
+    assert_equal "bridge.invalid_envelope", error.message
+  end
+
+  def test_cleanup_rejects_non_object_json_audit_without_raw_type_errors
+    audit_path = @valid_path.dirname.join("artifact-audit.json")
+    File.write(audit_path, "[]")
+    old_envelope = Cyborg::Bridge::Envelope.build(
+      type: "analysis_result", run_id: RUN_ID, payload: {"ok" => true}, created_at: Time.utc(2026, 8, 12, 18)
+    )
+    @store.write(run_id: RUN_ID, filename: "old.json", envelope: old_envelope)
+
+    error = assert_raises(Cyborg::InvalidArtifact) do
+      @store.cleanup!(now: Time.utc(2026, 8, 12, 20), retention_seconds: 60)
+    end
+
+    assert_equal "bridge.invalid_envelope", error.code
+    assert_equal "bridge.invalid_envelope", error.message
   end
 
   def test_cleanup_validates_payload_fingerprint_before_deleting
