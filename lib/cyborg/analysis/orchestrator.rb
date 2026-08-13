@@ -24,40 +24,43 @@ module Cyborg
       def execute(run_id:, packet:, tasks:, backend:, ceiling_micros: Analysis::DEFAULT_CEILING_MICROS)
         graph = TaskGraph.new(tasks:)
         plan = @controller.reserve(tasks:, ceiling_micros:)
-        parent_session = ensure_parent_session(run_id)
-        completed = []
-        outcomes = {}
-        launched = []
-        cached = []
+        @db.transaction do
+          parent_session = ensure_parent_session(run_id)
+          completed = []
+          outcomes = {}
+          launched = []
+          cached = []
 
-        loop do
-          progress = false
-          graph.ready_tasks(completed_ids: completed).each do |task|
-            next unless plan.status_for(task.id) == "reserved"
-            next unless @controller.allow_launch?(plan, task:)
+          loop do
+            progress = false
+            graph.ready_tasks(completed_ids: completed).each do |task|
+              next unless plan.status_for(task.id) == "reserved"
+              next unless @controller.allow_launch?(plan, task:)
 
-            progress = true
-            cached_row = @analyses.find_cached(task_id: task.id, input_fingerprint: task.packet_fingerprint)
-            if cached_row
-              outcome = outcome_from(cached_row.fetch(:result_json))
-              cached << task.id
-            else
-              outcome = validate_outcome(packet:, task:, outcome: backend.analyze(packet:, task:, reservation: task.reservation))
-              persist_analysis(run_id:, task:, outcome:)
-              launched << task.id
+              progress = true
+              cached_row = @analyses.find_cached(task_id: task.id, input_fingerprint: task.packet_fingerprint)
+              if cached_row
+                outcome = outcome_from(cached_row.fetch(:result_json))
+                cached << task.id
+              else
+                outcome = validate_outcome(packet:, task:, outcome: backend.analyze(packet:, task:, reservation: task.reservation))
+                persist_analysis(run_id:, task:, outcome:)
+                launched << task.id
+              end
+              outcomes[task.id] = outcome
+              record_usage(run_id:, task:, parent_session:, outcome:, cached: cached_row)
+              plan = @controller.release(plan, task:)
+              completed << task.id
             end
-            outcomes[task.id] = outcome
-            record_usage(run_id:, task:, parent_session:, cached: cached_row)
-            completed << task.id
+            break unless progress
           end
-          break unless progress
+
+          required = tasks.select(&:required).map(&:id)
+          missing = required - completed
+          raise UsageError.new("analysis.required_task_not_launched") unless missing.empty?
+
+          Execution.new(outcomes.freeze, plan, launched.freeze, cached.freeze)
         end
-
-        required = tasks.select(&:required).map(&:id)
-        missing = required - completed
-        raise UsageError.new("analysis.required_task_not_launched") unless missing.empty?
-
-        Execution.new(outcomes.freeze, plan, launched.freeze, cached.freeze)
       end
 
       private
@@ -70,14 +73,28 @@ module Cyborg
         id
       end
 
-      def record_usage(run_id:, task:, parent_session:, cached:)
+      def record_usage(run_id:, task:, parent_session:, outcome:, cached:)
         session_id = "#{parent_session}-#{task.id}"
         return if @db[:usage_records].where(id: session_id).first
 
+        usage = outcome.usage.is_a?(Hash) ? outcome.usage : {}
+        reported = Array(usage["records"]).find { |record| record["task_id"].to_s == task.id.to_s } || Array(usage["records"]).first
+        certainty = cached ? "locally_estimated" : reported&.fetch("certainty", usage.fetch("certainty", "unknown"))
+        known_cost = reported && reported["cost_micros"]
+        input_tokens = reported && reported["input_tokens"]
+        output_tokens = reported && reported["output_tokens"]
+        if %w[provider_reported locally_estimated].include?(certainty) &&
+           [known_cost, input_tokens, output_tokens].all? { |value| value.is_a?(Integer) && value >= 0 }
+          cost_micros = known_cost
+        else
+          certainty = "unknown"
+          cost_micros = nil
+          input_tokens = nil
+          output_tokens = nil
+        end
         @usage.record(
           id: session_id, run_id:, task_id: task.id, session_id:, parent_session_id: parent_session,
-          input_tokens: 0, output_tokens: 0, cost_micros: 0,
-          certainty: cached ? "locally_estimated" : "provider_reported", created_at: @now
+          input_tokens:, output_tokens:, cost_micros:, certainty:, created_at: @now
         )
       end
 
@@ -100,7 +117,10 @@ module Cyborg
                                "dependency_ids" => task.dependency_ids, "status" => "succeeded",
                                "claims" => outcome.claims, "usage" => nil}]
         }
-        validated = @validator.validate(packet:, result:)
+        task_packet = packet.merge(
+          "tasks" => Array(packet["tasks"]).select { |declared| declared["id"].to_s == task.id.to_s }
+        )
+        validated = @validator.validate(packet: task_packet, result:)
         if validated.respond_to?(:accepted?) && !validated.accepted?
           raise UsageError.new("analysis.rejected.#{validated.code}")
         end

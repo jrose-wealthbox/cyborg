@@ -141,28 +141,26 @@ class CyborgV1AcceptanceTest < Minitest::Test
     run = insert_run("run-1")
     evidence("e1", NOW)
     action = reconcile(run, evidence_ids: ["e1"])
-    barrier = Queue.new
-    attempted = Queue.new
+    read = Queue.new
+    committed = Queue.new
     writer = Thread.new do
-      barrier.pop
-      attempted << true
-      loop do
-        begin
-          Cyborg::Actions::StateMachine.new(db: @db, now: Time.iso8601(LATER)).transition(action_id: action.id, command: "acknowledge", origin: "manual")
-          break
-        rescue Sequel::DatabaseError => error
-          raise unless error.message.include?("locked")
-          sleep 0.005
-        end
-      end
+      read.pop
+      Cyborg::Actions::StateMachine.new(db: @db, now: Time.iso8601(LATER)).transition(action_id: action.id, command: "acknowledge", origin: "manual")
+      committed << true
     end
-    publisher_thread = Thread.new { publish(run) }
-    barrier << true
-    attempted.pop
-    result = publisher_thread.value
+    observer = lambda do |event:, run_id:, actions:|
+      assert_equal :before_reconciliation, event
+      assert_equal run.id, run_id
+      assert_equal "open", actions.find { |row| row.fetch("id") == action.id }.fetch("user_state")
+      read << true
+      committed.pop
+    end
+    result = Cyborg::Runs::Publisher.new(db: @db, now: Time.iso8601(LATER), publication_observer: observer).publish(
+      run:, analysis: {"claims" => [], "usage" => {"certainty" => "unknown", "records" => []}}
+    )
     writer.join
     item = result.view_model.fetch("sections").flat_map { |section| section.fetch("items") }.find { |value| value["id"] == action.id }
-    assert_includes %w[open acknowledged], item.fetch("state")
+    assert_equal "acknowledged", item.fetch("state")
     assert_equal "acknowledged", @db[:inferred_actions].where(id: action.id).get(:user_state)
     assert_equal 1, @db[:inferred_actions].where(id: action.id).get(:state_version)
   end
@@ -205,6 +203,36 @@ class CyborgV1AcceptanceTest < Minitest::Test
     assert_equal 1, backend.calls
     assert_equal "analysis-run-1", @db[:usage_records].where(id: "analysis-run-1").get(:id)
     assert_equal "analysis-run-1", @db[:usage_records].where(id: "analysis-run-1-task-0").get(:parent_session_id)
+  end
+
+  def test_orchestrator_reconciles_provider_usage_and_rolls_back_partial_failure
+    insert_run("run-usage")
+    usage_task = analysis_task("usage-task", required: true, cost: 7)
+    backend = ReportingBackend.new
+    execution = Cyborg::Analysis::Orchestrator.new(db: @db, now: Time.iso8601(NOW)).execute(
+      run_id: "run-usage", packet: orchestrator_packet("run-usage", [usage_task]), tasks: [usage_task], backend:, ceiling_micros: 10
+    )
+    usage = @db[:usage_records].where(id: "analysis-run-usage-usage-task").first
+    assert_equal 3, usage.fetch(:input_tokens)
+    assert_equal 5, usage.fetch(:output_tokens)
+    assert_equal 7, usage.fetch(:cost_micros)
+    assert_equal "provider_reported", usage.fetch(:certainty)
+    assert_equal 0, execution.reservation_plan.reservation_for(usage_task.id)
+    assert_equal "released", execution.reservation_plan.status_for(usage_task.id)
+
+    insert_run("run-failure")
+    first = analysis_task("first", required: true, cost: 1)
+    second = analysis_task("second", required: true, cost: 1)
+    failing = ReportingBackend.new(fail_task: second.id)
+    assert_raises(Cyborg::UsageError) do
+      Cyborg::Analysis::Orchestrator.new(db: @db, now: Time.iso8601(NOW)).execute(
+        run_id: "run-failure", packet: orchestrator_packet("run-failure", [first, second]),
+        tasks: [first, second], backend: failing, ceiling_micros: 10
+      )
+    end
+    assert_equal 0, @db[:analysis_results].where(run_id: "run-failure").count
+    assert_equal 0, @db[:usage_records].where(run_id: "run-failure").count
+    assert_equal 2, failing.calls
   end
 
   def test_markdown_and_json_renderers_preserve_persisted_semantics
@@ -302,6 +330,43 @@ class CyborgV1AcceptanceTest < Minitest::Test
       @calls += 1
       @backend.analyze(**kwargs)
     end
+  end
+
+  class ReportingBackend
+    attr_reader :calls
+
+    def initialize(fail_task: nil)
+      @fail_task = fail_task
+      @calls = 0
+    end
+
+    def analyze(packet:, task:, reservation:)
+      @calls += 1
+      raise Cyborg::UsageError.new("analysis.backend_failed") if task.id == @fail_task
+
+      Cyborg::Analysis::AnalysisOutcome.new(
+        claims: [],
+        usage: {"certainty" => "provider_reported", "records" => [{"id" => "provider-#{task.id}", "run_id" => packet.fetch("run_id"),
+          "task_id" => task.id, "session_id" => "provider-#{task.id}", "input_tokens" => 3,
+          "output_tokens" => 5, "cost_micros" => 7, "certainty" => "provider_reported",
+          "created_at" => NOW}]},
+        backend_metadata: {"backend" => "reporting-fixture", "provenance" => "offline-fixture"}
+      )
+    end
+  end
+
+  def analysis_task(id, required:, cost:)
+    Cyborg::Analysis::AnalysisTask.new(
+      id:, capability: "cheap_structured_extraction", dependency_ids: [], required:,
+      packet_fingerprint: "packet-#{id}", maximum_output_bytes: 8_192,
+      reservation: Cyborg::Analysis::Reservation.new(cost_micros: cost)
+    )
+  end
+
+  def orchestrator_packet(run_id, tasks)
+    payloads = tasks.map { |task| task.to_h.transform_keys(&:to_s).merge("reservation" => task.reservation.to_h.transform_keys(&:to_s)) }
+    {"run_id" => run_id, "records" => [], "tasks" => payloads, "allowed_action_kinds" => ["review"],
+     "maximum_claim_count" => 25, "maximum_output_bytes" => 8_192}
   end
 
   def normalize_render(view)

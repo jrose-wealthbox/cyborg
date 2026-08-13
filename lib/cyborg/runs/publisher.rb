@@ -15,7 +15,8 @@ module Cyborg
       attr_reader :db, :now
 
       def initialize(db:, now: nil, clock: nil, footer: nil, profile: "default",
-                     reconciler: nil, view_model_builder: nil, usage_recorder: nil, trusted_hosts: [])
+                     reconciler: nil, view_model_builder: nil, usage_recorder: nil, trusted_hosts: [],
+                     publication_observer: nil)
         @db = db
         @now = now || (clock.respond_to?(:now) ? clock.now : Time.now.utc)
         @now = @now.is_a?(Time) ? @now.utc : Time.iso8601(@now.to_s).utc
@@ -30,6 +31,7 @@ module Cyborg
         @builder = view_model_builder || Presentation::ViewModelBuilder.new(now: @now, footer:, trusted_hosts:)
         @trusted_hosts = trusted_hosts
         @usage = usage_recorder || Analysis::UsageRecorder.new(db:, now: @now)
+        @publication_observer = publication_observer
         @failure_stage = nil
       end
 
@@ -41,6 +43,8 @@ module Cyborg
       def publish(run:, analysis:)
         run_id = value(run, :id)
         raise PersistenceError.new("run.not_found") unless @runs.find(run_id)
+
+        observe_publication_boundary(run_id)
 
         result = nil
         db.transaction(mode: :immediate) do
@@ -80,6 +84,13 @@ module Cyborg
       end
 
       private
+
+      def observe_publication_boundary(run_id)
+        return unless @publication_observer
+
+        actions = db[:inferred_actions].order(:id).all.map { |row| row.transform_keys(&:to_s) }
+        @publication_observer.call(event: :before_reconciliation, run_id:, actions:)
+      end
 
       def persist_analysis(run_id:, analysis:, claims:, warnings:)
         raw = {
