@@ -269,3 +269,62 @@ ruby -w -Imotherbrain/test -e 'Dir["motherbrain/test/**/*_test.rb"].sort.each { 
 ```
 
 The redirected full CYBORG run produced `0` stderr bytes.
+
+## Fix round 3/5: strict source and configuration integer boundaries
+
+Completed 2026-08-13T13:08:09Z from the Task 6 follow-up review.
+
+### RED
+
+Added focused Config and SourceRegistry regressions for fractional and numeric
+string limits. Before the production changes, the coercion paths accepted and
+truncated invalid values:
+
+```text
+config: 18 runs, 48 assertions, 2 failures, 0 errors
+registry: 2 runs, 5 assertions, 1 failure, 0 errors
+```
+
+The cases cover source `max_pages`, `max_records`, `max_response_bytes`, and
+`max_seconds`, registry command timeouts, and global lease/analysis timeouts.
+Each suite also asserts that TOML/runtime `Integer` values remain unchanged.
+
+### GREEN
+
+Configuration’s integer parser now accepts only actual `Integer` values, so
+TOML floats and quoted numeric strings are rejected with the existing
+configuration error codes rather than passed through `Integer(value)`. Source
+configuration recognizes `max_response_bytes` explicitly.
+
+Source limit lookup and registry normalization now use the shared strict integer
+check. `Registration` validates its limits at construction, preventing direct
+callers from bypassing the boundary. No lossy coercion remains in the source
+limit paths.
+
+Focused verification:
+
+```text
+config: 18 runs, 58 assertions, 0 failures, 0 errors, 0 skips
+registry: 2 runs, 9 assertions, 0 failures, 0 errors, 0 skips
+contracts: 8 runs, 59 assertions, 0 failures, 0 errors, 0 skips
+host request builder: 2 runs, 8 assertions, 0 failures, 0 errors, 0 skips
+fixture adapter: 3 runs, 10 assertions, 0 failures, 0 errors, 0 skips
+source ingestor: 7 runs, 34 assertions, 0 failures, 0 errors, 0 skips
+cache policy: 5 runs, 16 assertions, 0 failures, 0 errors, 0 skips
+```
+
+Full CYBORG:
+
+```text
+bundle exec rake test
+135 runs, 465 assertions, 0 failures, 0 errors, 0 skips
+```
+
+Motherbrain preservation:
+
+```text
+ruby -w -Imotherbrain/test -e 'Dir["motherbrain/test/**/*_test.rb"].sort.each { |file| require_relative file }'
+31 runs, 124 assertions, 0 failures, 0 errors, 0 skips
+```
+
+The redirected full CYBORG run produced `0` stderr bytes.

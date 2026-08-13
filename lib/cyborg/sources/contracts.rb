@@ -32,10 +32,14 @@ module Cyborg
     def fetch_limit(limits, *keys)
       keys.each do |key|
         value = limits[key.to_s] || limits[key.to_sym]
-        return Integer(value) unless value.nil?
+        return strict_integer(value) unless value.nil?
       end
       nil
-    rescue ArgumentError, TypeError
+    end
+
+    def strict_integer(value)
+      return value if value.is_a?(Integer)
+
       raise ArgumentError, "source limits must be non-negative integers"
     end
 
@@ -43,9 +47,7 @@ module Cyborg
       raise ArgumentError, "source limits must be a hash" unless limits.is_a?(Hash)
 
       limits.each do |key, value|
-        unless value.is_a?(Integer)
-          raise ArgumentError, "source limits must be non-negative integers"
-        end
+        value = strict_integer(value)
         raise ArgumentError, "source limits must be non-negative integers" if value.negative?
         if %w[max_pages max_records max_response_bytes max_bytes max_seconds].include?(key.to_s) && value.zero?
           raise ArgumentError, "source limits must be positive for bounded retrieval"
@@ -241,7 +243,12 @@ module Cyborg
       filters: {}, limits: {}, credential_strategy: "external", health_checks: [], cursor_policy: "proposed",
       cache_policy: "ordinary", retention_class: "standard", allowed_fields: [], operations: {},
       parameters: {}, required: false, enabled: true
-    }
+    },
+    validator: ->(value) do
+      value = value.dup
+      value[6] = SourceContracts.validate_limits(value[6])
+      value
+    end
   ) do
     def required?
       required == true

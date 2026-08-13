@@ -133,6 +133,61 @@ class CyborgConfigTest < Minitest::Test
     end
   end
 
+  def test_rejects_fractional_or_string_source_limits
+    {
+      "max_pages" => "1.5",
+      "max_records" => '"12"',
+      "max_response_bytes" => "4096.5",
+      "max_seconds" => '"30"'
+    }.each do |key, value|
+      error = assert_raises(Cyborg::InvalidConfiguration) do
+        load_toml(<<~TOML)
+          #{File.read(fixture("config/minimal.toml"))}
+
+          [sources.github]
+          enabled = true
+          [sources.github.limits]
+          #{key} = #{value}
+        TOML
+      end
+      assert_equal "config.invalid_source_limit", error.code
+    end
+  end
+
+  def test_rejects_fractional_or_string_global_timeouts
+    {
+      "lease_timeout_seconds" => "600.5",
+      "analysis_timeout_seconds" => '"300"'
+    }.each do |key, value|
+      contents = File.read(fixture("config/minimal.toml")).sub(/#{key} = \S+/, "#{key} = #{value}")
+      error = assert_raises(Cyborg::InvalidConfiguration) { load_toml(contents) }
+      assert_equal "config.invalid_timeout", error.code
+    end
+  end
+
+  def test_preserves_integer_source_limits_and_timeouts
+    config = load_toml(<<~TOML)
+      #{File.read(fixture("config/minimal.toml"))}
+
+      [sources.github]
+      enabled = true
+      [sources.github.limits]
+      max_pages = 2
+      max_records = 12
+      max_response_bytes = 4096
+      max_seconds = 30
+      command_timeout_seconds = 15
+    TOML
+
+    assert_equal(
+      {"max_pages" => 2, "max_records" => 12, "max_response_bytes" => 4096,
+       "max_seconds" => 30, "command_timeout_seconds" => 15},
+      config.sources.fetch("github").limits
+    )
+    assert_equal 600, config.timeouts.lease_timeout_seconds
+    assert_equal 300, config.timeouts.analysis_timeout_seconds
+  end
+
   def test_rejects_working_hours_with_invalid_syntax_range_or_order
     [
       "start = \"9am\"\nend = \"17:00\"",

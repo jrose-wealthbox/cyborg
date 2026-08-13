@@ -401,7 +401,7 @@ module Cyborg
           end
         end
         limits = fetch_hash(value, "limits")
-        %w[max_records max_pages max_bytes max_seconds max_repositories command_timeout_seconds].each do |key|
+        %w[max_records max_pages max_bytes max_response_bytes max_seconds max_repositories command_timeout_seconds].each do |key|
           limits[key] = value[key] if value.key?(key)
         end
         limits = limits.each_with_object({}) do |(key, limit), out|
@@ -608,11 +608,9 @@ module Cyborg
     end
 
     def integer(value, code)
-      number = Integer(value)
-      raise_invalid(code) if number.negative?
-      number
-    rescue ArgumentError, TypeError
-      raise_invalid(code)
+      raise_invalid(code) unless value.is_a?(Integer)
+      raise_invalid(code) if value.negative?
+      value
     end
 
     def normalize_weekday(day, code: "config.invalid_weekend_day")
@@ -650,7 +648,7 @@ module Cyborg
       limits[key.to_s]
     end
 
-    %w[max_records max_pages max_bytes max_seconds max_repositories command_timeout_seconds].each do |limit|
+    %w[max_records max_pages max_bytes max_response_bytes max_seconds max_repositories command_timeout_seconds].each do |limit|
       define_method(limit) { limits[limit] }
     end
   end

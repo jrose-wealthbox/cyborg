@@ -85,12 +85,10 @@ module Cyborg
 
     def normalize_limits(value)
       stringify(value).each_with_object({}) do |(key, limit), result|
-        integer = Integer(limit)
+        integer = SourceContracts.strict_integer(limit)
         raise ArgumentError, "source limits must be non-negative" if integer.negative?
 
         result[key] = integer
-      rescue ArgumentError, TypeError
-        raise ArgumentError, "source limits must be non-negative integers"
       end
     end
 
