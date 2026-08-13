@@ -61,6 +61,7 @@ module Cyborg
             next unless plan.status_for(task.id) == "reserved"
 
             record_skipped_usage(run_id:, task:, parent_session:)
+            @usage.release(session_id: "#{parent_session}-#{task.id}")
             plan = @controller.release(plan, task:)
           end
           missing = required - completed

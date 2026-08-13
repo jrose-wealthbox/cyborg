@@ -252,7 +252,7 @@ class CyborgV1AcceptanceTest < Minitest::Test
     assert_equal "released", execution.reservation_plan.status_for(second.id)
     skipped_usage = @db[:usage_records].where(id: "analysis-run-ceiling-#{second.id}").first
     assert_equal "reserved", skipped_usage.fetch(:certainty)
-    assert_equal 1, skipped_usage.fetch(:reserved_cost_micros)
+    assert_equal 0, skipped_usage.fetch(:reserved_cost_micros)
     assert_equal 0, @db[:usage_records].where(task_id: second.id, certainty: "provider_reported").count
   end
 
