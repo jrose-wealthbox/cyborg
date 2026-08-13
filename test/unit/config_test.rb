@@ -166,6 +166,56 @@ class CyborgConfigTest < Minitest::Test
     end
   end
 
+  def test_rejects_a_profile_with_working_hours_only_on_weekend_days
+    Tempfile.create(["cyborg", ".toml"]) do |file|
+      file.write(<<~TOML)
+        [calendar.profiles.default]
+        weekend_days = ["saturday", "sunday"]
+        [calendar.profiles.default.working_hours]
+        saturday = ["09:00", "17:00"]
+        sunday = ["09:00", "17:00"]
+      TOML
+      file.flush
+
+      error = assert_raises(Cyborg::InvalidConfiguration) do
+        Cyborg::Config.load(path: file.path, env: {})
+      end
+      assert_equal "config.no_business_day", error.code
+    end
+  end
+
+  def test_accepts_weekend_hours_when_a_weekday_has_a_valid_interval
+    Tempfile.create(["cyborg", ".toml"]) do |file|
+      file.write(<<~TOML)
+        [calendar.profiles.default]
+        weekend_days = ["saturday", "sunday"]
+        [calendar.profiles.default.working_hours]
+        friday = ["09:00", "17:00"]
+        saturday = ["09:00", "17:00"]
+        sunday = ["09:00", "17:00"]
+      TOML
+      file.flush
+
+      config = Cyborg::Config.load(path: file.path, env: {})
+      assert_equal({"start" => "09:00", "end" => "17:00"}, config.profile.working_hours["friday"])
+    end
+  end
+
+  def test_rejects_invalid_weekend_day_values
+    Tempfile.create(["cyborg", ".toml"]) do |file|
+      file.write(<<~TOML)
+        [calendar.profiles.default]
+        weekend_days = ["saturday", "not-a-weekday"]
+      TOML
+      file.flush
+
+      error = assert_raises(Cyborg::InvalidConfiguration) do
+        Cyborg::Config.load(path: file.path, env: {})
+      end
+      assert_equal "config.invalid_weekend_day", error.code
+    end
+  end
+
   private
 
   def load_toml(contents)

@@ -139,3 +139,59 @@ $ bundle exec ruby -I motherbrain/test -I motherbrain/lib \
 - Updated `lib/cyborg/config.rb` and `lib/cyborg/calendar.rb`.
 - Updated `test/unit/config_test.rb` and `test/unit/calendar_test.rb`.
 - `git diff --check` and Ruby syntax checks are clean.
+
+## Fix round 2/5
+
+### Findings addressed
+
+- Profiles with day-specific working hours now require at least one valid interval on a non-weekend weekday; weekend-only schedules fail with `config.no_business_day`.
+- Added the shared `Cyborg::Weekday` normalizer for numeric, full-name, and abbreviated weekday values. Config and externally supplied calendar profiles now use the same deterministic validation, including rejection of malformed values.
+- `BusinessCalendar#business_day?` and window search now require a configured interval for the date's weekday, while retaining the global `start`/`end` working-hours form.
+
+### Fix-round RED evidence
+
+After adding the regression tests and before the production changes:
+
+```text
+$ bundle exec ruby -Itest test/unit/config_test.rb
+15 runs, 42 assertions, 1 failures, 0 errors, 0 skips
+
+$ bundle exec ruby -Itest test/unit/calendar_test.rb
+8 runs, 13 assertions, 3 failures, 0 errors, 0 skips
+```
+
+The failures were the expected weekend-only profile acceptance, named/invalid external weekend handling, and closed weekday being treated as a business day.
+
+### Fix-round GREEN evidence
+
+Focused regression tests:
+
+```text
+$ bundle exec ruby -Itest test/unit/config_test.rb
+15 runs, 43 assertions, 0 failures, 0 errors, 0 skips
+
+$ bundle exec ruby -Itest test/unit/calendar_test.rb
+8 runs, 17 assertions, 0 failures, 0 errors, 0 skips
+```
+
+Full CYBORG suite:
+
+```text
+$ bundle exec rake test
+90 runs, 236 assertions, 0 failures, 0 errors, 0 skips
+```
+
+Motherbrain preservation suite:
+
+```text
+$ bundle exec ruby -I motherbrain/test -I motherbrain/lib \
+    -e 'ARGV.each { |path| load path }' -- $(rg --files motherbrain/test -g '*_test.rb' | sort)
+31 runs, 124 assertions, 0 failures, 0 errors, 0 skips
+```
+
+### Fix-round commands and files
+
+- `ruby -c lib/cyborg/weekday.rb`, `ruby -c lib/cyborg/config.rb`, and `ruby -c lib/cyborg/calendar.rb` all report `Syntax OK`.
+- `git diff --check` is clean.
+- Added `lib/cyborg/weekday.rb`.
+- Updated `lib/cyborg/config.rb`, `lib/cyborg/calendar.rb`, `test/unit/config_test.rb`, and `test/unit/calendar_test.rb`.

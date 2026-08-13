@@ -4,6 +4,7 @@ require "date"
 require "set"
 require "time"
 require "tzinfo"
+require_relative "weekday"
 
 module Cyborg
   TimeWindow = Data.define(:start_utc, :end_utc, :timezone)
@@ -12,10 +13,7 @@ module Cyborg
   # they do not know about holidays or the user's weekend.
   class BusinessCalendar
     MAX_SEARCH_DAYS = 3_660
-    WEEKDAYS = {
-      "sunday" => 0, "monday" => 1, "tuesday" => 2, "wednesday" => 3,
-      "thursday" => 4, "friday" => 5, "saturday" => 6
-    }.freeze
+    WEEKDAYS = Weekday::NAMES.each_with_index.to_h.freeze
 
     HOLIDAY_NAMES = {
       "new_years_day" => ->(year) { Date.new(year, 1, 1) },
@@ -58,7 +56,7 @@ module Cyborg
     def business_day?(date, profile: @default_profile)
       selected = resolve_profile(profile)
       date = date.to_date
-      !selected.weekend_days.include?(date.wday) && !holiday_dates(date.year, selected).include?(date)
+      business_day_for?(date, selected)
     end
 
     def holiday?(date, profile: @default_profile)
@@ -94,27 +92,37 @@ module Cyborg
     end
 
     def validate_possible_business_day!(profile)
-      weekend_days = Array(profile.weekend_days).map(&:to_i).uniq
+      weekend_days = normalized_weekend_days(profile)
       raise InvalidConfiguration.new("config.no_business_day") if weekend_days.length == 7
 
       working_hours = profile.working_hours
       return unless working_hours.is_a?(Hash) && !working_hours.key?("start") && !working_hours.key?("end")
 
       possible = working_hours.any? do |day, interval|
-        interval && !weekend_days.include?(day_to_wday(day))
+        interval && !weekend_days.include?(Weekday.normalize(day, error_code: "config.invalid_working_hours"))
       end
       raise InvalidConfiguration.new("config.no_business_day") unless possible
     end
 
-    def day_to_wday(day)
-      {
-        "sunday" => 0, "monday" => 1, "tuesday" => 2, "wednesday" => 3,
-        "thursday" => 4, "friday" => 5, "saturday" => 6
-      }.fetch(day.to_s.downcase) { day.to_i }
+    def normalized_weekend_days(profile)
+      Array(profile.weekend_days).map { |day| Weekday.normalize(day) }.uniq
     end
 
     def business_day_for?(date, profile)
-      !profile.weekend_days.include?(date.wday) && !holiday_dates(date.year, profile).include?(date)
+      weekend_days = normalized_weekend_days(profile)
+      !weekend_days.include?(date.wday) &&
+        working_interval_available?(date.wday, profile) &&
+        !holiday_dates(date.year, profile).include?(date)
+    end
+
+    def working_interval_available?(weekday, profile)
+      working_hours = profile.working_hours
+      return true if working_hours.is_a?(Hash) && working_hours.key?("start") && working_hours.key?("end")
+      return false unless working_hours.is_a?(Hash)
+
+      working_hours.any? do |day, interval|
+        interval && Weekday.normalize(day, error_code: "config.invalid_working_hours") == weekday
+      end
     end
 
     def local_midnight(timezone, date)

@@ -85,4 +85,67 @@ class CyborgCalendarTest < Minitest::Test
     end
     assert_equal "config.no_business_day", error.code
   end
+
+  def test_calendar_normalizes_external_named_weekend_days
+    profile_class = Data.define(
+      :name, :timezone, :working_hours, :weekend_days, :holidays, :observed,
+      :easter, :overrides, :holiday_additions, :holiday_removals,
+      :window_before_business_days, :window_after_business_days
+    )
+    profile = profile_class.new(
+      "named-weekends", "UTC", {"start" => "09:00", "end" => "17:00"},
+      %w[sunday monday tuesday wednesday thursday friday saturday],
+      [], true, false, {}, [], [], 1, 1
+    )
+
+    calendar = Cyborg::BusinessCalendar.new(profiles: {"named-weekends" => profile})
+    error = assert_raises(Cyborg::InvalidConfiguration) do
+      calendar.business_day?(Date.new(2026, 8, 10), profile: "named-weekends")
+    end
+    assert_equal "config.no_business_day", error.code
+  end
+
+  def test_calendar_rejects_invalid_external_weekend_day_values
+    profile_class = Data.define(
+      :name, :timezone, :working_hours, :weekend_days, :holidays, :observed,
+      :easter, :overrides, :holiday_additions, :holiday_removals,
+      :window_before_business_days, :window_after_business_days
+    )
+    profile = profile_class.new(
+      "invalid-weekend", "UTC", {"start" => "09:00", "end" => "17:00"},
+      ["saturday", "not-a-weekday"], [], true, false, {}, [], [], 1, 1
+    )
+
+    calendar = Cyborg::BusinessCalendar.new(profiles: {"invalid-weekend" => profile})
+    error = assert_raises(Cyborg::InvalidConfiguration) do
+      calendar.business_day?(Date.new(2026, 8, 10), profile: "invalid-weekend")
+    end
+    assert_equal "config.invalid_weekend_day", error.code
+  end
+
+  def test_window_skips_closed_weekdays_in_day_specific_working_hours
+    path = Tempfile.new(["cyborg", ".toml"])
+    path.write(<<~TOML)
+      [calendar.profiles.default]
+      timezone = "UTC"
+      weekend_days = ["saturday", "sunday"]
+      [calendar.profiles.default.working_hours]
+      monday = ["09:00", "17:00"]
+      tuesday = false
+      wednesday = ["09:00", "17:00"]
+      thursday = false
+      friday = ["09:00", "17:00"]
+    TOML
+    path.flush
+    config = Cyborg::Config.load(path: path.path, env: {})
+    calendar = Cyborg::BusinessCalendar.new(config: config)
+
+    refute calendar.business_day?(Date.new(2026, 8, 11))
+    window = calendar.window(now: Time.utc(2026, 8, 12, 8), profile: "default")
+
+    assert_equal "2026-08-10T00:00:00Z", window.start_utc.iso8601
+    assert_equal "2026-08-14T23:59:59Z", window.end_utc.iso8601
+  ensure
+    path&.close!
+  end
 end

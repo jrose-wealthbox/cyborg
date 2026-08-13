@@ -4,6 +4,7 @@ require "date"
 require "pathname"
 require "toml-rb"
 require "tzinfo"
+require_relative "weekday"
 
 module Cyborg
   # A resolved calendar profile. The values inside this Data object are deeply
@@ -38,7 +39,7 @@ module Cyborg
       thanksgiving christmas
     ].freeze
     DEFAULT_WORKING_HOURS = {"start" => "09:00", "end" => "17:00"}.freeze
-    WEEKDAY_NAMES = %w[sunday monday tuesday wednesday thursday friday saturday].freeze
+    WEEKDAY_NAMES = Weekday::NAMES
 
     KNOWN_ROOT_SECTIONS = %w[
       analysis budget cache calendar database defaults footer filters llm output
@@ -248,7 +249,7 @@ module Cyborg
       working_hours = normalize_working_hours(working_hours)
       weekend_days = values.key?("weekend_days") ? values["weekend_days"] : ["saturday", "sunday"]
       weekend_days = Array(weekend_days).map { |day| normalize_weekday(day) }
-      if weekend_days.uniq.length == 7
+      if weekend_days.uniq.length == 7 || !possible_business_day?(working_hours, weekend_days)
         raise_invalid("config.no_business_day", "calendar profile has no possible business day")
       end
       timezone = (values["timezone"] || runtime["timezone"] || DEFAULT_TIMEZONE).to_s
@@ -372,7 +373,7 @@ module Cyborg
     end
 
     def normalize_weekday_name(day)
-      index = normalize_weekday(day)
+      index = normalize_weekday(day, code: "config.invalid_working_hours")
       WEEKDAY_NAMES.fetch(index)
     end
 
@@ -614,16 +615,15 @@ module Cyborg
       raise_invalid(code)
     end
 
-    def normalize_weekday(day)
-      case day.to_s.downcase
-      when "sunday", "sun", "0" then 0
-      when "monday", "mon", "1" then 1
-      when "tuesday", "tue", "2" then 2
-      when "wednesday", "wed", "3" then 3
-      when "thursday", "thu", "4" then 4
-      when "friday", "fri", "5" then 5
-      when "saturday", "sat", "6" then 6
-      else raise_invalid("config.invalid_weekend_day")
+    def normalize_weekday(day, code: "config.invalid_weekend_day")
+      Weekday.normalize(day, error_code: code)
+    end
+
+    def possible_business_day?(working_hours, weekend_days)
+      return true if working_hours.key?("start") && working_hours.key?("end")
+
+      working_hours.any? do |day, interval|
+        interval && !weekend_days.include?(normalize_weekday(day, code: "config.invalid_working_hours"))
       end
     end
   end
