@@ -17,6 +17,14 @@ module Cyborg
     DEFAULT_EXIT_STATUS = 64
   end
 
+  # Raised before a host analysis call when deterministic packet limits would
+  # otherwise be exceeded.  No source data or analysis claims are persisted.
+  class PacketTooLarge < UsageError
+    def initialize(message = "analysis packet exceeds configured byte limit")
+      super("analysis.packet_too_large", message)
+    end
+  end
+
   class InvalidArtifact < Error
     DEFAULT_EXIT_STATUS = 65
   end
