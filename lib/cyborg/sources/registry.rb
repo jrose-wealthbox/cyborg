@@ -14,11 +14,13 @@ module Cyborg
       },
       "local_git" => {
         "capabilities" => ["authored_activity"],
-        "operations" => {"authored_activity" => "local_git.activity.read"}
+        "operations" => {"authored_activity" => "local_git.activity.read"},
+        "cache_policy" => "expensive"
       },
       "git" => {
         "capabilities" => ["authored_activity"],
-        "operations" => {"authored_activity" => "local_git.activity.read"}
+        "operations" => {"authored_activity" => "local_git.activity.read"},
+        "cache_policy" => "expensive"
       }
     }.freeze
 
@@ -47,7 +49,7 @@ module Cyborg
           credential_strategy: attributes["credential_strategy"] || "external",
           health_checks: Array(attributes["health_checks"] || []).map(&:to_s),
           cursor_policy: attributes["cursor_policy"] || "proposed",
-          cache_policy: attributes["cache_policy"] || "ordinary",
+          cache_policy: attributes["cache_policy"] || defaults_for(attributes)["cache_policy"] || "ordinary",
           retention_class: attributes["retention_class"] || "standard",
           allowed_fields: Array(attributes["allowed_fields"] || []).map(&:to_s),
           operations: stringify(attributes["operations"] || defaults_for(attributes)["operations"] || {}),
