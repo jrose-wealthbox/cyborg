@@ -48,7 +48,8 @@ module Cyborg
                 launched << task.id
               end
               outcomes[task.id] = outcome
-              record_usage(run_id:, task:, parent_session:, outcome:, cached: cached_row)
+              reported_cost = record_usage(run_id:, task:, parent_session:, outcome:, cached: cached_row)
+              plan = plan.add_reported_micros(reported_cost) if reported_cost.positive?
               plan = @controller.release(plan, task:)
               completed << task.id
             end
@@ -56,6 +57,12 @@ module Cyborg
           end
 
           required = tasks.select(&:required).map(&:id)
+          tasks.reject { |task| completed.include?(task.id) }.each do |task|
+            next unless plan.status_for(task.id) == "reserved"
+
+            record_skipped_usage(run_id:, task:, parent_session:)
+            plan = @controller.release(plan, task:)
+          end
           missing = required - completed
           raise UsageError.new("analysis.required_task_not_launched") unless missing.empty?
 
@@ -75,7 +82,7 @@ module Cyborg
 
       def record_usage(run_id:, task:, parent_session:, outcome:, cached:)
         session_id = "#{parent_session}-#{task.id}"
-        return if @db[:usage_records].where(id: session_id).first
+        return 0 if @db[:usage_records].where(id: session_id).first
 
         usage = outcome.usage.is_a?(Hash) ? outcome.usage : {}
         reported = Array(usage["records"]).find { |record| record["task_id"].to_s == task.id.to_s } || Array(usage["records"]).first
@@ -95,6 +102,17 @@ module Cyborg
         @usage.record(
           id: session_id, run_id:, task_id: task.id, session_id:, parent_session_id: parent_session,
           input_tokens:, output_tokens:, cost_micros:, certainty:, created_at: @now
+        )
+        cached ? 0 : cost_micros.to_i
+      end
+
+      def record_skipped_usage(run_id:, task:, parent_session:)
+        session_id = "#{parent_session}-#{task.id}"
+        return if @db[:usage_records].where(id: session_id).first
+
+        @usage.record(
+          id: session_id, run_id:, task_id: task.id, session_id:, parent_session_id: parent_session,
+          reserved_cost_micros: task.reservation.cost_micros, certainty: "reserved", created_at: @now
         )
       end
 

@@ -235,6 +235,27 @@ class CyborgV1AcceptanceTest < Minitest::Test
     assert_equal 2, failing.calls
   end
 
+  def test_provider_cost_reconciles_ceiling_before_next_ready_launch
+    insert_run("run-ceiling")
+    first = analysis_task("ceiling-first", required: true, cost: 1)
+    second = analysis_task("ceiling-second", required: false, cost: 1)
+    backend = ReportingBackend.new
+    execution = Cyborg::Analysis::Orchestrator.new(db: @db, now: Time.iso8601(NOW)).execute(
+      run_id: "run-ceiling", packet: orchestrator_packet("run-ceiling", [first, second]),
+      tasks: [first, second], backend:, ceiling_micros: 3
+    )
+    assert_equal [first.id], execution.launched_task_ids
+    assert_empty execution.cached_task_ids
+    assert_equal 1, backend.calls
+    assert_equal 7, execution.reservation_plan.reported_micros
+    assert_equal 0, execution.reservation_plan.reserved_micros
+    assert_equal "released", execution.reservation_plan.status_for(second.id)
+    skipped_usage = @db[:usage_records].where(id: "analysis-run-ceiling-#{second.id}").first
+    assert_equal "reserved", skipped_usage.fetch(:certainty)
+    assert_equal 1, skipped_usage.fetch(:reserved_cost_micros)
+    assert_equal 0, @db[:usage_records].where(task_id: second.id, certainty: "provider_reported").count
+  end
+
   def test_markdown_and_json_renderers_preserve_persisted_semantics
     run = insert_run("run-1")
     insert_snapshot(run.id, "github", status: "healthy", data_status: "fresh")
