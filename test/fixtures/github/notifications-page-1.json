@@ -1,0 +1,12 @@
+[
+  {
+    "id":"ci-only", "reason":"ci_activity", "type":"CheckSuite", "updated_at":"2026-08-12T10:00:00Z",
+    "subject":{"title":"Build #1","url":"https://api.github.example/repos/acme/cyborg/check-suites/1"},
+    "repository":{"full_name":"acme/cyborg","node_id":"repo-node","owner":{"login":"acme"}}
+  },
+  {
+    "id":"review-and-ci", "reason":"review_requested", "type":"PullRequest", "updated_at":"2026-08-12T11:00:00Z",
+    "subject":{"title":"Review this","url":"https://api.github.example/repos/acme/cyborg/pulls/42"},
+    "repository":{"full_name":"acme/cyborg","node_id":"repo-node","owner":{"login":"acme"}}
+  }
+]
