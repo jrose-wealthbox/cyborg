@@ -210,3 +210,8 @@ Cache TTL: 1 day
 - Can we trigger desktop notifications, for new pending action items?
 - How do we permanently mark an action item as complete, if there is no programmatic way for the skill to autonomously determine it is complete? For example, suppose I have an email telling me to shave my head. The skill has no way to know if I've shaved my head.
 - What potential data sources, potentially accessible to you, am I not considering?
+- How should we handle secrets such as auth tokens? Ideally, this app should not be in the business of storing them.... but we need them to operate....
+
+## Future goals
+
+I'd like this to eventually be accessible via the web. Separate "presentation", "retrieval", and "analysis" tasks as much as possible, as there may be different methods of presentation in the future.
