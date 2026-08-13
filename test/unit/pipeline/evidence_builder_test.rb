@@ -24,6 +24,14 @@ class CyborgPipelineEvidenceBuilderTest < Minitest::Test
     refute_equal one, two
   end
 
+  def test_account_and_source_identity_contribute_to_evidence_id
+    builder = Cyborg::Pipeline::EvidenceBuilder.new(trusted_hosts: ["github.example"])
+    one = record(source_record_id: "same").with(owner_identity: "account-one")
+    two = record(source_record_id: "same").with(owner_identity: "account-two")
+
+    refute_equal builder.call(one).first.fetch("evidence_id"), builder.call(two).first.fetch("evidence_id")
+  end
+
   private
 
   def record(source_record_id: "one")

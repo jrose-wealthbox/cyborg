@@ -19,6 +19,8 @@ module Cyborg
       DEFAULT_MAXIMUM_OUTPUT_BYTES = 8_192
       DEFAULT_MAXIMUM_FIELD_BYTES = 4_096
       ACTION_KINDS = %w[review respond follow_up investigate].freeze
+      USER_STATES = %w[open acknowledged snoozed done dismissed].freeze
+      INFERENCE_STATUSES = %w[active stale superseded].freeze
 
       attr_reader :maximum_bytes, :maximum_claim_count, :maximum_output_bytes, :prompt_version
 
@@ -48,8 +50,10 @@ module Cyborg
         @group_candidates = group_candidates || GroupCandidates.new(
           evidence_builder: @evidence_builder, trusted_hosts:
         )
-        @allowed_action_kinds = Array(allowed_action_kinds).map(&:to_s).reject(&:empty?).uniq.freeze
+        @allowed_action_kinds = Array(allowed_action_kinds).map { |value| safe_string(value, "allowed_action_kind") }.uniq.sort.freeze
         raise ArgumentError, "allowed_action_kinds cannot be empty" if @allowed_action_kinds.empty?
+        unknown = @allowed_action_kinds - ACTION_KINDS
+        raise ArgumentError, "unsupported allowed_action_kinds: #{unknown.join(", ")}" unless unknown.empty?
       end
 
       def call(run:, records:, actions:, tasks:, reservation:)
@@ -79,7 +83,7 @@ module Cyborg
           "records" => packet_records,
           "existing_actions" => Array(actions).map { |action| action_payload(action) }.sort_by { |action| action.fetch("current_subject_key") },
           "group_candidates" => groups.sort_by { |group| group.fetch("group_id") },
-          "unresolved_questions" => groups.flat_map { |group| Array(group["unresolved_questions"]) }.uniq,
+          "unresolved_questions" => groups.flat_map { |group| Array(group["unresolved_questions"]) }.uniq.sort,
           "tasks" => Array(tasks).map { |task| task_payload(task) }.sort_by { |task| task.fetch("id") },
           "reservation" => sanitize_value(reservation),
           "maximum_claim_count" => @maximum_claim_count,
@@ -90,7 +94,7 @@ module Cyborg
             "maximum_output_bytes" => @maximum_output_bytes,
             "maximum_excerpt_bytes" => @maximum_excerpt_bytes
           },
-          "action_state_version" => run_value(run, :captured_action_state_version, 0),
+          "action_state_version" => nonnegative_integer(run_value(run, :captured_action_state_version, 0), "action_state_version"),
           "source_fields_are_untrusted_data" => true
         }
 
@@ -104,7 +108,7 @@ module Cyborg
 
       def record_payload(record, evidence)
         fields = @redactor.call(Support.structured_fields(record))
-        deep_link = evidence.map { |item| item["source_url"] }.compact.first
+        deep_link = evidence.map { |item| item["source_url"] }.compact.sort.first
         {
           "source_record_id" => bounded(Support.source_record_id(record)),
           "source_name" => bounded(Support.source_name(record)),
@@ -134,16 +138,18 @@ module Cyborg
         required = %w[current_subject_key user_state inference_status state_version]
         missing = required.reject { |field| value.key?(field) && !value[field].nil? }
         raise ArgumentError, "action row missing #{missing.join(", ")}" unless missing.empty?
-        unless value.fetch("state_version").is_a?(Integer) && value.fetch("state_version") >= 0
-          raise ArgumentError, "action row state_version must be a non-negative integer"
-        end
+        subject = value.fetch("current_subject_key")
+        raise ArgumentError, "action row subject key must be a nonblank String" unless subject.is_a?(String) && !subject.strip.empty?
+        raise ArgumentError, "action row has unsupported user_state" unless USER_STATES.include?(value.fetch("user_state"))
+        raise ArgumentError, "action row has unsupported inference_status" unless INFERENCE_STATUSES.include?(value.fetch("inference_status"))
+        nonnegative_integer(value.fetch("state_version"), "action row state_version")
         value
       end
 
       def task_payload(task)
         value = sanitize_value(task)
         value = {} unless value.is_a?(Hash)
-        value["dependency_ids"] = Array(value["dependency_ids"]).map(&:to_s)
+        value["dependency_ids"] = Array(value["dependency_ids"]).map(&:to_s).sort
         value
       end
 
@@ -165,7 +171,9 @@ module Cyborg
         when Hash
           redacted = @redactor.call(value)
           redacted.each_with_object({}) do |(key, item), result|
-            result[key.to_s] = sanitize_value(item)
+            key_name = key.to_s
+            safe_key = key_name.match?(Cyborg::Redactor::SENSITIVE_KEY) ? Cyborg::Redactor::REDACTION : bounded(key_name)
+            result[safe_key] = sanitize_value(item)
           end
         when Array
           value.map { |item| sanitize_value(item) }
@@ -195,6 +203,19 @@ module Cyborg
           raise ArgumentError, "#{field} must be a positive integer"
         end
         value
+      end
+
+      def nonnegative_integer(value, field)
+        unless value.is_a?(Integer) && value >= 0
+          raise ArgumentError, "#{field} must be a non-negative integer"
+        end
+        value
+      end
+
+      def safe_string(value, field)
+        text = value.is_a?(String) ? value : value.to_s
+        raise ArgumentError, "#{field} must be a nonblank String" if text.strip.empty? || @redactor.call(text) != text
+        text
       end
     end
   end

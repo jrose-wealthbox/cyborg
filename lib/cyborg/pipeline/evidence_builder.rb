@@ -42,6 +42,10 @@ module Cyborg
         record_url = trusted_url(Support.value(record, :deep_link))
         source_record_id = redact_and_bound(Support.source_record_id(record), 512)
         record_kind = Support.record_kind(record)
+        source_name = redact_and_bound(Support.source_name(record), 256)
+        account_identity = Support.account_identity(record)
+        account_identity = Support.value(record, :owner_identity) if account_identity.empty?
+        account_identity = redact_and_bound(account_identity, 256)
 
         drafts.first(@maximum_evidence).filter_map do |draft|
           draft_hash = Support.as_hash(draft)
@@ -59,6 +63,8 @@ module Cyborg
           # analysis boundary.
           identity = {
             "source_record_id" => source_record_id,
+            "source_name" => source_name,
+            "account_identity" => account_identity,
             "record_kind" => record_kind,
             "source_url" => source_url,
             "source_label" => source_label,

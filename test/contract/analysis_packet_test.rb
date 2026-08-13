@@ -25,7 +25,7 @@ class CyborgAnalysisPacketContractTest < Minitest::Test
     assert_operator Cyborg::Bridge::CanonicalJSON.dump(packet).bytesize, :<=, 262_144
     assert_equal true, packet.fetch("source_fields_are_untrusted_data")
     assert_empty packet.to_s.scan(/(?:ghp_|sk-[A-Za-z0-9]{20,})/)
-    assert_equal ["review", "respond", "follow_up", "investigate"], packet.fetch("allowed_action_kinds")
+    assert_equal %w[follow_up investigate respond review], packet.fetch("allowed_action_kinds")
     assert_equal 7, packet.fetch("existing_actions").first.fetch("state_version")
     assert_equal "prompt-1", packet.fetch("versions").fetch("prompt")
   end
@@ -69,6 +69,45 @@ class CyborgAnalysisPacketContractTest < Minitest::Test
     end
 
     assert_match(/action/, error.message)
+  end
+
+  def test_packet_rejects_unsafe_action_kinds_and_state_version
+    assert_raises(ArgumentError) { Cyborg::Pipeline::AnalysisPacketBuilder.new(allowed_action_kinds: ["review", "sk-proj-abcdefghijklmnopqrstuvwxyz123456"]) }
+    assert_raises(ArgumentError) do
+      @builder.call(run: @run, records: [], actions: [action.merge("state_version" => "7")], tasks: [], reservation: @reservation)
+    end
+  end
+
+  def test_packet_rejects_unknown_action_states_and_blank_subject
+    assert_raises(ArgumentError) { @builder.call(run: @run, records: [], actions: [action.merge("current_subject_key" => " ")], tasks: [], reservation: @reservation) }
+    assert_raises(ArgumentError) { @builder.call(run: @run, records: [], actions: [action.merge("user_state" => "mystery")], tasks: [], reservation: @reservation) }
+    assert_raises(ArgumentError) { @builder.call(run: @run, records: [], actions: [action.merge("inference_status" => "mystery")], tasks: [], reservation: @reservation) }
+  end
+
+  def test_packet_sorts_valid_evidence_links_before_selecting_deep_link
+    first = record("links").with(deep_link: nil, evidence: [
+      Cyborg::EvidenceDraft.new(source_url: "https://github.example/z", source_label: "GitHub", excerpt: "z", field_path: "body", evidence_at: "2026-08-12T12:00:00Z", relation: "supports"),
+      Cyborg::EvidenceDraft.new(source_url: "https://github.example/a", source_label: "GitHub", excerpt: "a", field_path: "body", evidence_at: "2026-08-12T12:00:00Z", relation: "supports")
+    ])
+    second = first.with(evidence: first.evidence.reverse)
+    p1 = @builder.call(run: @run, records: [first], actions: [action], tasks: [task.merge("dependency_ids" => %w[d2 d1])], reservation: @reservation)
+    p2 = @builder.call(run: @run, records: [second], actions: [action], tasks: [task.merge("dependency_ids" => %w[d1 d2])], reservation: @reservation)
+
+    assert_equal "https://github.example/a", p1.fetch("records").first.fetch("deep_link")
+    assert_equal Cyborg::Bridge::CanonicalJSON.dump(p1), Cyborg::Bridge::CanonicalJSON.dump(p2)
+    assert_equal %w[d1 d2], p1.fetch("tasks").first.fetch("dependency_ids")
+  end
+
+  def test_packet_recursive_secret_scan_finds_no_key_or_value
+    packet = @builder.call(run: @run, records: [record("safe")], actions: [action.merge("metadata" => {"api_key" => "sk-proj-abcdefghijklmnopqrstuvwxyz123456"})], tasks: [task], reservation: @reservation)
+    walk = lambda do |value|
+      case value
+      when Hash then value.flat_map { |key, item| [key, walk.call(item)] }.flatten
+      when Array then value.flat_map { |item| walk.call(item) }
+      else value.to_s
+      end
+    end
+    refute_match(/api[_-]?key|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}/i, walk.call(packet).join("\n"))
   end
 
   def test_evidence_ids_survive_reordering_and_insertion

@@ -18,3 +18,7 @@ Verification:
 ## Hardening round 1
 
 Added adversarial boundary hardening: credential-shaped values are redacted or rejected across all packet string fields (including IDs and trusted URLs), evidence IDs no longer depend on array position, evidence is keyed by full record identity, deduplication and packet collections have canonical ordering, and malformed action rows are rejected unless required subject/state fields and a non-negative state version are present. Focused adversarial and order-invariance tests were added.
+
+## Hardening round 2
+
+Packet fields now enforce sorted supported action kinds, nonnegative integer action-state versions, supported user/inference states, nonblank action subject keys, recursive sensitive-key/value redaction, deterministic trusted-link selection, sorted dependency/set arrays, and evidence IDs incorporating source/account/record/kind identity. Verification: app 206 runs/663 assertions; Motherbrain 31 runs/124 assertions; zero failures/errors.
