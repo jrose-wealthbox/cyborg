@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../test_helper"
+require "timeout"
 
 class CyborgRunLeaseTest < Minitest::Test
   NOW = Time.utc(2026, 8, 13, 12, 0, 0)
@@ -39,6 +40,19 @@ class CyborgRunLeaseTest < Minitest::Test
     assert_equal 75, error.exit_status
     assert File.exist?(@lease_one)
     refute File.exist?(@lease_two)
+  end
+
+  def test_existing_lease_file_rolls_back_db_row_without_deadlocking
+    File.write(@lease_one, "stale-token\n")
+    File.chmod(0o600, @lease_one)
+
+    error = assert_raises(Cyborg::UnsafeArtifact) do
+      Timeout.timeout(2) { @manager.acquire(run_id: "run-1", lease_file: @lease_one) }
+    end
+
+    assert_equal "bridge.unsafe_file", error.code
+    assert_empty @db[:run_leases].all
+    assert_equal "stale-token\n", File.read(@lease_one)
   end
 
   def test_lease_file_is_mode_0600_and_database_contains_only_fingerprint
@@ -109,6 +123,27 @@ class CyborgRunLeaseTest < Minitest::Test
     metadata = JSON.parse(old_run.fetch(:usage_summary_json))
     assert_equal "run.lease_expired", metadata.fetch("error_code")
     assert_empty @db[:run_leases].where(run_id: "run-1").all
+    assert_equal "run-2", @db[:run_leases].get(:run_id)
+  end
+
+  def test_fresh_manager_reclaims_expired_lease_file_and_reacquires_same_path
+    first = @manager.acquire(run_id: "run-1", lease_file: @lease_one)
+    old_token = File.read(@lease_one)
+    manager = Cyborg::Runs::LeaseManager.new(
+      @db,
+      clock: Cyborg::FrozenClock.new(NOW + 61),
+      lease_timeout_seconds: 60,
+      lock_file: @lock_file
+    )
+
+    second = manager.acquire(run_id: "run-2", lease_file: @lease_one)
+
+    assert_equal "run-1", first.run_id
+    assert_equal "run-2", second.run_id
+    assert_equal "failed", @db[:runs].where(id: "run-1").get(:status)
+    metadata = JSON.parse(@db[:runs].where(id: "run-1").get(:usage_summary_json))
+    assert_equal "run.lease_expired", metadata.fetch("error_code")
+    refute_equal old_token, File.read(@lease_one)
     assert_equal "run-2", @db[:run_leases].get(:run_id)
   end
 

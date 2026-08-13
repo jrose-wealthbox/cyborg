@@ -84,7 +84,7 @@ module Cyborg
                   raise Cyborg::LeaseBusy.new("run.lease_busy", "an active briefing run already owns the lease")
                 end
 
-                fail_expired_row!(row, now)
+                fail_expired_row!(row, now, lease_file: path)
               end
 
               # The foreign key deliberately verifies that callers cannot
@@ -129,7 +129,7 @@ module Cyborg
           end
 
           unless lease_active?(row, now)
-            @db.transaction(mode: :immediate) { fail_expired_row!(@db[:run_leases].first, now) }
+            @db.transaction(mode: :immediate) { fail_expired_row!(@db[:run_leases].first, now, lease_file: path) }
             raise invalid_lease("run.lease_expired")
           end
 
@@ -153,7 +153,7 @@ module Cyborg
               raise invalid_lease("run.invalid_lease")
             end
             unless lease_active?(row, now)
-              fail_expired_row!(row, now)
+              fail_expired_row!(row, now, lease_file: path)
               raise invalid_lease("run.lease_expired")
             end
 
@@ -182,7 +182,7 @@ module Cyborg
               @db[:run_leases].where(id: 1).delete
               removed = true
             else
-              fail_expired_row!(row, now)
+              fail_expired_row!(row, now, lease_file: path)
               raise invalid_lease("run.lease_expired")
             end
           end
@@ -297,7 +297,7 @@ module Cyborg
         )
       end
 
-      def fail_expired_row!(row, now)
+      def fail_expired_row!(row, now, lease_file: nil)
         return unless row
 
         completed_at = now.utc.iso8601
@@ -306,22 +306,17 @@ module Cyborg
           usage_summary_json: JSON.generate("error_code" => "run.lease_expired")
         )
         @db[:run_leases].where(id: row.fetch(:id)).delete
-        delete_token_file(@known_lease_files.delete(row.fetch(:run_id)))
+        token_path = row[:lease_file] || lease_file || @known_lease_files.delete(row.fetch(:run_id))
+        delete_token_file(token_path)
       end
 
       def remove_inserted_lease(run_id, fingerprint)
-        with_os_lock do
-          @db.transaction(mode: :immediate) do
-            row = @db[:run_leases].first
-            if row && row[:run_id].to_s == run_id && row[:token_fingerprint].to_s == fingerprint
-              @db[:run_leases].where(id: row[:id]).delete
-            end
+        @db.transaction(mode: :immediate) do
+          row = @db[:run_leases].first
+          if row && row[:run_id].to_s == run_id && row[:token_fingerprint].to_s == fingerprint
+            @db[:run_leases].where(id: row[:id]).delete
           end
         end
-      rescue StandardError
-        # Preserve the original filesystem exception.  A subsequent command
-        # can still reclaim the expired/failed row safely.
-        nil
       end
 
       def write_token_exclusively(path, token)
@@ -376,7 +371,7 @@ module Cyborg
         path = Pathname(path)
         begin
           stat = path.lstat
-          return if stat.directory?
+          return unless stat.file? && (stat.mode & 0o777) == TOKEN_FILE_MODE
 
           File.delete(path.to_s)
         rescue Errno::ENOENT

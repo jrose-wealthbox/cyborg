@@ -64,3 +64,36 @@ The existing `run_leases` schema has no lease-file path or dedicated run error
 code column. Lease paths are therefore held by the owning process and stable
 failure codes are retained in `runs.usage_summary_json`, preserving the
 existing schema boundary and avoiding plaintext tokens in durable state.
+
+## Fix round 1 (2026-08-13T05:36:09Z)
+
+### RED
+
+Added two regression tests to `test/integration/run_lease_test.rb`:
+
+- `test_existing_lease_file_rolls_back_db_row_without_deadlocking` created a
+  stale `0600` lease file and bounded acquisition with `Timeout.timeout(2)`.
+  Before the fix it timed out while rescue attempted to reacquire the already
+  held OS flock; the inserted `run_leases` row could not be cleaned up.
+- `test_fresh_manager_reclaims_expired_lease_file_and_reacquires_same_path`
+  acquired with manager A, advanced the clock, then acquired from a fresh
+  manager using the same DB, lock, and lease path. Before the fix it failed on
+  the stale token file after marking the old run expired.
+
+### GREEN
+
+Rollback now deletes the matching lease row in a direct immediate transaction
+under the current OS lock, with no nested flock. Expiry cleanup accepts the
+deterministically supplied lease path and safely removes only a regular `0600`
+file before inserting the replacement lease. The old run is still marked
+`failed` with `run.lease_expired`, and the replacement token is newly generated.
+
+Focused lease tests:
+
+```text
+bundle exec ruby -Itest test/integration/run_lease_test.rb
+9 runs, 40 assertions, 0 failures, 0 errors
+```
+
+Fix commit: this report is included in the commit titled
+`fix: recover expired lease files safely`.
