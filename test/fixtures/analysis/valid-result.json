@@ -1,0 +1,31 @@
+{
+  "claims": [
+    {
+      "action_kind": "review",
+      "summary": "Review pull request 42",
+      "subject_type": "github_pull_request",
+      "subject_id": "node-42",
+      "owner_identity": "me@example.com",
+      "thread_or_target_identity": "acme/cyborg#42",
+      "anchor_evidence_id": "e1",
+      "evidence_ids": ["e1"],
+      "confidence": 0.9,
+      "due_at": "2026-08-14T12:00:00Z",
+      "people": ["Alice"],
+      "projects": ["CYBORG"],
+      "new_commitment": false,
+      "rationale": "The review request is explicit.",
+      "task_id": "task-extract",
+      "capability": "cheap_structured_extraction",
+      "dependency_ids": []
+    }
+  ],
+  "usage": {
+    "certainty": "provider_reported",
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "cost_micros": 100,
+    "records": []
+  },
+  "backend_metadata": {"backend": "fixture", "provider": "fixture"}
+}
