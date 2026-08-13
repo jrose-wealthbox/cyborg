@@ -1,0 +1,45 @@
+# frozen_string_literal: true
+
+module Cyborg
+  class Error < StandardError
+    DEFAULT_EXIT_STATUS = 70
+
+    attr_reader :code, :exit_status
+
+    def initialize(code, message = nil, exit_status: self.class::DEFAULT_EXIT_STATUS)
+      @code = code.to_s
+      @exit_status = exit_status
+      super(message || @code)
+    end
+  end
+
+  class UsageError < Error
+    DEFAULT_EXIT_STATUS = 64
+  end
+
+  class InvalidArtifact < Error
+    DEFAULT_EXIT_STATUS = 65
+  end
+
+  class InternalError < Error
+    DEFAULT_EXIT_STATUS = 70
+  end
+
+  UnexpectedError = InternalError
+
+  class PersistenceError < Error
+    DEFAULT_EXIT_STATUS = 73
+  end
+
+  DatabaseError = PersistenceError
+
+  class LeaseBusy < Error
+    DEFAULT_EXIT_STATUS = 75
+  end
+
+  class ConfigurationError < Error
+    DEFAULT_EXIT_STATUS = 78
+  end
+
+  ConfigError = ConfigurationError
+end
