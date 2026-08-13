@@ -45,6 +45,16 @@ module Cyborg
     DEFAULT_EXIT_STATUS = 78
   end
 
+  # Source adapters use these errors for bounded, machine-readable retrieval
+  # failures. They are data failures, not authorization to broaden a request.
+  class SourceError < Error
+    DEFAULT_EXIT_STATUS = 70
+  end
+
+  class SourceLimitError < SourceError
+    DEFAULT_EXIT_STATUS = 64
+  end
+
   # Raised when the resolved TOML configuration cannot be safely used.
   # Keep this distinct from a generic configuration failure so callers can
   # report a stable, machine-readable validation code.

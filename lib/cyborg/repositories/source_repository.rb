@@ -13,6 +13,7 @@ module Cyborg
           result_attrs = result.to_h
           registration_attrs = registration.respond_to?(:to_h) ? registration.to_h : {}
           run_attrs = run.respond_to?(:to_h) ? run.to_h : {}
+          error = result_attrs[:error]
           {
             id: result_attrs[:id] || SecureRandom.uuid,
             run_id: run_attrs[:id] || run&.id,
@@ -21,7 +22,7 @@ module Cyborg
             adapter_version: result_attrs[:adapter_version] || registration_attrs[:adapter_version] || registration&.adapter_version,
             started_at: result_attrs[:started_at], completed_at: result_attrs[:completed_at],
             status: result_attrs[:status], data_status: result_attrs[:data_status], cache_reason: result_attrs[:cache_reason],
-            error_code: result_attrs.dig(:error, :code), error_remediation: result_attrs.dig(:error, :remediation),
+            error_code: error&.code, error_remediation: error&.remediation,
             record_count: Array(result_attrs[:records]).length, proposed_cursor: result_attrs[:next_cursor],
             cursor_disposition: cursor_disposition || "hold", prior_activated_snapshot_id: options[:prior_activated_snapshot_id]
           }
