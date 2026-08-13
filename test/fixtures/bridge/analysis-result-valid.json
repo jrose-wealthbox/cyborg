@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "artifact_type": "analysis_result",
+  "run_id": "018f5f62-3ef4-7d31-9e6d-8f6dfeddb847",
+  "created_at": "2026-08-12T20:00:00Z",
+  "payload_sha256": "db22b872df508adb39a9c031d45c4cc36485e4a5fbdd4482ed94c9e057ab836b",
+  "payload": {
+    "claims": [],
+    "summary": "fixture"
+  }
+}

@@ -21,6 +21,10 @@ module Cyborg
     DEFAULT_EXIT_STATUS = 65
   end
 
+  class UnsafeArtifact < InvalidArtifact
+    DEFAULT_EXIT_STATUS = 65
+  end
+
   class InternalError < Error
     DEFAULT_EXIT_STATUS = 70
   end
