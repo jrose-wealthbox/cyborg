@@ -27,6 +27,12 @@ module Cyborg
       def add_alias(attributes)
         attrs = attributes.to_h
         validate_timestamps!(attrs, %i[created_at])
+        existing = db[:action_key_aliases].where(subject_key: attrs.fetch(:subject_key)).first
+        if existing
+          return true if existing.fetch(:series_id) == attrs.fetch(:series_id) && existing.fetch(:identity_version) == attrs.fetch(:identity_version)
+
+          raise Cyborg::PersistenceError.new("actions.alias_conflict")
+        end
         db[:action_key_aliases].insert(attrs)
         true
       end
@@ -61,8 +67,8 @@ module Cyborg
         true
       end
 
-      def transition(attributes)
-        attrs = attributes.to_h
+      def transition(attributes = nil, **options)
+        attrs = (attributes || options).to_h
         validate_timestamps!(attrs, %i[changed_at])
         db[:action_transitions].insert(attrs)
         true
