@@ -84,6 +84,11 @@ module Cyborg
       (reasons & INCLUDED_REASONS).any?
     end
 
+    def allowed_repository?(notification)
+      repository = stringify_hash(notification)["repository"] || {}
+      repository_allowed?(stringify_hash(repository)["full_name"])
+    end
+
     def trusted_url?(url)
       uri = URI.parse(url.to_s)
       uri.scheme == "https" && uri.host == hostname && uri.userinfo.nil? && uri.query.nil? && uri.fragment.nil?

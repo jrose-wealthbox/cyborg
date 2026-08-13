@@ -186,4 +186,18 @@ class CyborgGithubNormalizerTest < Minitest::Test
 
     assert_equal "https://github.example/acme/cyborg/pull/42", record.deep_link
   end
+
+  def test_issue_target_requires_both_repository_and_issue_node_ids
+    record = @normalizer.normalize(
+      {
+        "id" => "missing-node", "reason" => "mention", "type" => "Issue",
+        "subject" => {"title" => "Mention", "url" => "https://api.github.example/repos/acme/cyborg/issues/7"},
+        "repository" => {"full_name" => "acme/cyborg", "node_id" => "repo-node"}
+      },
+      context: @context,
+      metadata: {"number" => 7, "title" => "Mention", "body" => "Mention"}
+    )
+
+    assert_nil record.canonical_target_id
+  end
 end

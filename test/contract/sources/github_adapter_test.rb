@@ -180,6 +180,111 @@ class CyborgGithubAdapterTest < Minitest::Test
     assert_equal "2026-08-12T11:00:00Z", record.latest_reply_at
   end
 
+  def test_issue_mention_fetches_issue_metadata_and_uses_issue_node_identity
+    notifications = JSON.generate([
+      {
+        "id" => "issue-mention", "reason" => "mention", "type" => "Issue",
+        "subject" => {"title" => "Mention", "url" => "https://api.github.example/repos/acme/cyborg/issues/7"},
+        "repository" => {"full_name" => "acme/cyborg", "node_id" => "repo-node"}
+      }
+    ])
+    issue = JSON.generate(
+      "node_id" => "issue-node", "number" => 7, "title" => "Mention",
+      "html_url" => "https://github.example/acme/cyborg/issues/7", "body" => "Please help"
+    )
+    runner = FakeRunner.new(
+      "notifications?" => reply(notifications),
+      "/issues/7" => reply(issue),
+      :default => reply(fixture("github/authenticated.json"))
+    )
+
+    result = Cyborg::GithubAdapter.new(runner:, gh: "gh", hostname: "github.example", per_page: 2).fetch(@context)
+    record = result.records.fetch(0)
+
+    assert_equal "github_issue", record.canonical_target_type
+    assert_equal "github.example:repo-node:issue-node", record.canonical_target_id
+    assert_equal "https://github.example/acme/cyborg/issues/7", record.deep_link
+  end
+
+  def test_issue_assignment_fetches_issue_metadata_as_read_only_activity
+    notifications = JSON.generate([
+      {
+        "id" => "issue-assignment", "reason" => "assign", "type" => "Issue",
+        "subject" => {"title" => "Assigned", "url" => "https://api.github.example/repos/acme/cyborg/issues/8"},
+        "repository" => {"full_name" => "acme/cyborg", "node_id" => "repo-node"}
+      }
+    ])
+    issue = JSON.generate("node_id" => "assigned-issue-node", "number" => 8, "title" => "Assigned", "html_url" => "https://github.example/acme/cyborg/issues/8")
+    runner = FakeRunner.new("notifications?" => reply(notifications), "/issues/8" => reply(issue), :default => reply(fixture("github/authenticated.json")))
+
+    result = Cyborg::GithubAdapter.new(runner:, gh: "gh", hostname: "github.example", per_page: 2).fetch(@context)
+
+    assert_equal "assignment", result.records.fetch(0).record_kind
+    assert_equal "github.example:repo-node:assigned-issue-node", result.records.fetch(0).canonical_target_id
+    assert runner.argv.any? { |argv| argv.last.to_s.include?("/issues/8") && argv.include?("GET") }
+  end
+
+  def test_missing_issue_node_id_degrades_with_invalid_response
+    notifications = JSON.generate([
+      {
+        "id" => "missing-issue-node", "reason" => "mention", "type" => "Issue",
+        "subject" => {"title" => "Mention", "url" => "https://api.github.example/repos/acme/cyborg/issues/7"},
+        "repository" => {"full_name" => "acme/cyborg", "node_id" => "repo-node"}
+      }
+    ])
+    runner = FakeRunner.new("notifications?" => reply(notifications), "/issues/7" => reply(JSON.generate("number" => 7, "title" => "Mention")), :default => reply(fixture("github/authenticated.json")))
+
+    result = Cyborg::GithubAdapter.new(runner:, gh: "gh", hostname: "github.example", per_page: 2).fetch(@context)
+
+    assert_equal "failed", result.status
+    assert_equal "github.invalid_response", result.error.code
+    assert_empty result.records
+  end
+
+  def test_context_filters_cannot_expand_configured_allowlist_and_excluded_repo_skips_metadata
+    notifications = JSON.generate([
+      {
+        "id" => "excluded", "reason" => "mention", "type" => "Issue",
+        "subject" => {"title" => "Excluded", "url" => "https://api.github.example/repos/other/project/issues/9"},
+        "repository" => {"full_name" => "other/project", "node_id" => "other-repo-node"}
+      }
+    ])
+    runner = FakeRunner.new(
+      "notifications?" => reply(notifications),
+      "/issues/9" => reply(fixture("github/malformed.json")),
+      :default => reply(fixture("github/authenticated.json"))
+    )
+    context = @context.with(filters: {"repositories" => ["other/project"]})
+    adapter = Cyborg::GithubAdapter.new(
+      runner:, gh: "gh", hostname: "github.example", per_page: 2,
+      repository_allowlist: ["acme/cyborg"]
+    )
+
+    result = adapter.fetch(context)
+
+    assert_empty result.records
+    refute runner.argv.any? { |argv| argv.last.to_s.include?("/issues/9") }
+  end
+
+  def test_registration_limits_are_hard_ceilings_over_large_context_limits
+    adapter = Cyborg::GithubAdapter.new(
+      runner: @runner, gh: "gh", hostname: "github.example", per_page: 2,
+      limits: {max_pages: 1, max_records: 1}
+    )
+    context = @context.with(prior_cursor: "page:1", limits: {max_pages: 99, max_records: 99, max_response_bytes: 100_000})
+
+    result = adapter.fetch(context)
+
+    assert_equal "degraded", result.status
+    assert_equal "page:1", result.next_cursor
+    assert_equal 1, result.records.length
+    assert_equal 1, runner_page_requests(@runner).length
+  end
+
+  def runner_page_requests(runner)
+    runner.argv.select { |argv| argv.first(2) == ["gh", "api"] && argv.last.to_s.include?("/notifications?") }
+  end
+
   private
 
   def fixture(path)

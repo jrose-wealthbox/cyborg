@@ -28,7 +28,7 @@ module Cyborg
       runner: ProcessRunner.new, gh: DEFAULT_GH, hostname: DEFAULT_HOSTNAME,
       repository_allowlist: [], organization_allowlist: [], repositories: nil, organizations: nil,
       per_page: DEFAULT_PER_PAGE, timeout: DEFAULT_TIMEOUT, account_identity: nil,
-      adapter_version: "github-1", env: {}
+      adapter_version: "github-1", env: {}, limits: {}
     )
       @runner = runner
       @gh = gh.to_s
@@ -42,6 +42,7 @@ module Cyborg
       @account_identity = account_identity&.to_s
       @adapter_version = adapter_version.to_s
       @env = env || {}
+      @limits = normalize_limits(limits)
       @last_login = nil
     end
 
@@ -87,8 +88,8 @@ module Cyborg
 
       normalizer = normalizer_for(context)
       records = []
-      max_pages = context_limit(context, :max_pages) || DEFAULT_MAX_PAGES
-      max_records = context_limit(context, :max_records) || DEFAULT_MAX_RECORDS
+      max_pages = bounded_limit(context_limit(context, :max_pages), @limits.fetch("max_pages", DEFAULT_MAX_PAGES))
+      max_records = bounded_limit(context_limit(context, :max_records), @limits.fetch("max_records", DEFAULT_MAX_RECORDS))
       per_page = [context_value(context, :filters, {}).fetch("per_page", @per_page).to_i, 100].min
       per_page = @per_page unless per_page.positive?
       page = page_from_cursor(context_value(context, :prior_cursor, nil)) || 1
@@ -107,9 +108,13 @@ module Cyborg
           break if records.length >= max_records
           next unless notification.is_a?(Hash)
           next unless normalizer.include_notification?(notification)
+          next unless normalizer.allowed_repository?(notification)
 
           metadata = metadata_for(notification, context)
           record = normalizer.normalize(notification, context:, metadata:)
+          if record && %w[github_issue github_pr].include?(record.canonical_target_type) && record.canonical_target_id.nil?
+            raise Failure.new("github.invalid_response")
+          end
           records << record if record
         end
         last_page = page
@@ -203,7 +208,7 @@ module Cyborg
 
       type = notification["type"].to_s.downcase
       subject_type = subject["type"].to_s.downcase
-      return {} unless path.include?("/pulls/") || type.casecmp?("pullrequest") || type.include?("review") || type.include?("comment") || subject_type.include?("pull")
+      return {} unless path.include?("/pulls/") || path.include?("/issues/") || type.casecmp?("pullrequest") || type.include?("review") || type.include?("comment") || subject_type.include?("pull") || subject_type.include?("issue")
 
       metadata = api_json(pull_request_argv(path), context)
       raise Failure.new("github.invalid_response") unless metadata.is_a?(Hash)
@@ -225,9 +230,38 @@ module Cyborg
       filters = context_value(context, :filters, {})
       GithubNormalizer.new(
         hostname: @hostname,
-        repository_allowlist: @repository_allowlist + Array(filters["repositories"] || filters["repository_allowlist"]),
-        organization_allowlist: @organization_allowlist + Array(filters["organizations"] || filters["organization_allowlist"])
+        repository_allowlist: narrowed_allowlist(@repository_allowlist, filters["repositories"] || filters["repository_allowlist"]),
+        organization_allowlist: narrowed_allowlist(@organization_allowlist, filters["organizations"] || filters["organization_allowlist"])
       )
+    end
+
+    def narrowed_allowlist(configured, requested)
+      requested = Array(requested).map { |value| value.to_s.strip.downcase }.reject(&:empty?).uniq
+      configured = Array(configured).map { |value| value.to_s.strip.downcase }.reject(&:empty?).uniq
+      return requested if configured.empty?
+      return configured if requested.empty?
+
+      intersection = configured & requested
+      intersection.empty? ? ["__cyborg_no_repository_match__"] : intersection
+    end
+
+    def bounded_limit(requested, ceiling)
+      requested.nil? ? ceiling : [requested, ceiling].min
+    end
+
+    def normalize_limits(value)
+      raise ArgumentError, "limits must be a hash" unless value.is_a?(Hash)
+
+      value.each_with_object({}) do |(key, item), result|
+        raise ArgumentError, "limits must be positive integers" unless item.is_a?(Integer)
+
+        integer = item
+        raise ArgumentError, "limits must be positive integers" unless integer.positive?
+
+        result[key.to_s] = integer if %w[max_pages max_records].include?(key.to_s)
+      rescue ArgumentError, TypeError
+        raise ArgumentError, "limits must be positive integers"
+      end
     end
 
     def page_from_cursor(cursor)

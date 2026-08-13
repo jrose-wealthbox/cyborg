@@ -91,3 +91,43 @@ Created:
   degraded result and holds the incoming cursor for safe retry.
 - `.serena/` remains unrelated untracked workspace state and was intentionally
   not staged.
+
+## Fix round 1: review findings
+
+### RED
+
+Added regression tests for issue mentions/assignments, missing issue node IDs,
+configured/context allowlist narrowing, metadata-call suppression, and hard
+registration ceilings. Before the fixes, the focused adapter suite reported:
+
+```text
+15 runs, 34 assertions, 2 failures, 1 error
+```
+
+The failures showed issue notifications did not fetch `/issues/:number`
+metadata (leaving a nil stable target), context filters could broaden a
+configured allowlist and trigger metadata retrieval for excluded repositories,
+and the adapter had no `limits:` registration ceiling.
+
+### GREEN
+
+- Issue and pull-request metadata is fetched only after notification and
+  repository/org allowlist checks; issue and assignment records now use the
+  repository node ID plus issue node ID for stable targets.
+- Missing node IDs produce `github.invalid_response` with no partial records or
+  invented identity.
+- Context repository/org filters intersect configured allowlists; an empty
+  intersection matches nothing and cannot broaden access.
+- Registration `max_pages` and `max_records` are hard ceilings over context
+  values, and bound-reached retrievals hold the prior cursor as degraded.
+
+Focused fix-round verification:
+
+```text
+bundle exec ruby -Itest test/contract/sources/github_adapter_test.rb && \
+  bundle exec ruby -Itest test/unit/sources/github_normalizer_test.rb && \
+  bundle exec ruby -Itest test/unit/process_runner_test.rb
+17 runs, 48 assertions, 0 failures, 0 errors, 0 skips
+10 runs, 39 assertions, 0 failures, 0 errors, 0 skips
+3 runs, 11 assertions, 0 failures, 0 errors, 0 skips
+```
