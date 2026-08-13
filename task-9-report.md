@@ -22,3 +22,7 @@ Added adversarial boundary hardening: credential-shaped values are redacted or r
 ## Hardening round 2
 
 Packet fields now enforce sorted supported action kinds, nonnegative integer action-state versions, supported user/inference states, nonblank action subject keys, recursive sensitive-key/value redaction, deterministic trusted-link selection, sorted dependency/set arrays, and evidence IDs incorporating source/account/record/kind identity. Verification: app 206 runs/663 assertions; Motherbrain 31 runs/124 assertions; zero failures/errors.
+
+## Hardening round 3
+
+Existing action rows now require a supported nonblank `action_kind`; task dependency IDs are deduplicated and sorted as a semantic set. Verification: app 208 runs/666 assertions; Motherbrain 31 runs/124 assertions; zero failures/errors.

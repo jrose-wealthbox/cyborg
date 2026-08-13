@@ -84,6 +84,24 @@ class CyborgAnalysisPacketContractTest < Minitest::Test
     assert_raises(ArgumentError) { @builder.call(run: @run, records: [], actions: [action.merge("inference_status" => "mystery")], tasks: [], reservation: @reservation) }
   end
 
+  def test_packet_rejects_missing_or_unsupported_existing_action_kind
+    assert_raises(ArgumentError) do
+      @builder.call(run: @run, records: [], actions: [action.reject { |key, _| key == "action_kind" }], tasks: [], reservation: @reservation)
+    end
+    assert_raises(ArgumentError) do
+      @builder.call(run: @run, records: [], actions: [action.merge("action_kind" => "unknown")], tasks: [], reservation: @reservation)
+    end
+  end
+
+  def test_packet_deduplicates_task_dependency_ids
+    packet = @builder.call(
+      run: @run, records: [], actions: [],
+      tasks: [task.merge("dependency_ids" => %w[d2 d1 d2 d1])], reservation: @reservation
+    )
+
+    assert_equal %w[d1 d2], packet.fetch("tasks").first.fetch("dependency_ids")
+  end
+
   def test_packet_sorts_valid_evidence_links_before_selecting_deep_link
     first = record("links").with(deep_link: nil, evidence: [
       Cyborg::EvidenceDraft.new(source_url: "https://github.example/z", source_label: "GitHub", excerpt: "z", field_path: "body", evidence_at: "2026-08-12T12:00:00Z", relation: "supports"),

@@ -135,11 +135,13 @@ module Cyborg
       def action_payload(action)
         value = sanitize_value(action)
         raise ArgumentError, "action row must be a hash" unless value.is_a?(Hash)
-        required = %w[current_subject_key user_state inference_status state_version]
+        required = %w[current_subject_key user_state inference_status state_version action_kind]
         missing = required.reject { |field| value.key?(field) && !value[field].nil? }
         raise ArgumentError, "action row missing #{missing.join(", ")}" unless missing.empty?
         subject = value.fetch("current_subject_key")
         raise ArgumentError, "action row subject key must be a nonblank String" unless subject.is_a?(String) && !subject.strip.empty?
+        action_kind = value.fetch("action_kind")
+        raise ArgumentError, "action row action_kind must be a supported nonblank String" unless action_kind.is_a?(String) && ACTION_KINDS.include?(action_kind)
         raise ArgumentError, "action row has unsupported user_state" unless USER_STATES.include?(value.fetch("user_state"))
         raise ArgumentError, "action row has unsupported inference_status" unless INFERENCE_STATUSES.include?(value.fetch("inference_status"))
         nonnegative_integer(value.fetch("state_version"), "action row state_version")
@@ -149,7 +151,7 @@ module Cyborg
       def task_payload(task)
         value = sanitize_value(task)
         value = {} unless value.is_a?(Hash)
-        value["dependency_ids"] = Array(value["dependency_ids"]).map(&:to_s).sort
+        value["dependency_ids"] = Array(value["dependency_ids"]).map(&:to_s).uniq.sort
         value
       end
 
