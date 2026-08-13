@@ -7,25 +7,26 @@ module Cyborg
         options = parse_options(argv, required: %w[run lease-file], optional: %w[output])
         run_id = options.fetch("run")
         lease_file = options.fetch("lease-file")
-        verify_and_renew!(run_id:, lease_file:)
-        run = run_repository.find(run_id)
-        raise InvalidArtifact.new("run.not_found", exit_status: 65) unless run
-        store = store_for_lease(lease_file)
-        required_response_check(store:, run_id:)
-        capture_action_state!(run_id)
-        run = run_repository.find(run_id)
-        tasks, reservation = tasks_and_reservation
-        records = filtered_records(run)
-        packet = Pipeline::AnalysisPacketBuilder.new(
-          trusted_hosts:, prompt_version: run.prompt_version || "prompt-1",
-          maximum_claim_count: config_limit("maximum_claim_count", 25),
-          maximum_output_bytes: config_limit("maximum_output_bytes", 8_192),
-          maximum_bytes: config_limit("maximum_bytes", 262_144)
-        ).call(run:, records:, actions: actions_for_packet, tasks:, reservation:)
-        path = output_path(store:, run_id:, requested: options["output"], default_filename: "analysis-packet.json")
-        write_envelope(store:, run_id:, filename: path.basename.to_s, type: "analysis_packet", payload: packet)
-        stdout.puts safe_json("run_id" => run_id, "status" => run_repository.find(run_id).status, "output" => path.to_s)
-        0
+        with_mutation_lease(run_id:, lease_file:) do
+          run = run_repository.find(run_id)
+          raise InvalidArtifact.new("run.not_found", exit_status: 65) unless run
+          store = store_for_lease(lease_file)
+          required_response_check(store:, run_id:)
+          capture_action_state!(run_id)
+          run = run_repository.find(run_id)
+          tasks, reservation = tasks_and_reservation
+          records = filtered_records(run)
+          packet = Pipeline::AnalysisPacketBuilder.new(
+            trusted_hosts:, prompt_version: run.prompt_version || "prompt-1",
+            maximum_claim_count: config_limit("maximum_claim_count", 25),
+            maximum_output_bytes: config_limit("maximum_output_bytes", 8_192),
+            maximum_bytes: config_limit("maximum_bytes", 262_144)
+          ).call(run:, records:, actions: actions_for_packet, tasks:, reservation:)
+          path = output_path(store:, run_id:, requested: options["output"], default_filename: "analysis-packet.json")
+          write_envelope(store:, run_id:, filename: path.basename.to_s, type: "analysis_packet", payload: packet)
+          stdout.puts safe_json("run_id" => run_id, "status" => run_repository.find(run_id).status, "output" => path.to_s)
+          0
+        end
       end
 
       private
@@ -37,10 +38,49 @@ module Cyborg
 
           filename = "retrieval-response-#{request.fetch("id")}.json"
           path = store.root.join(run_id, filename)
-          unless File.file?(path)
+          begin
+            path.lstat
+          rescue Errno::ENOENT
+            raise UsageError.new("bridge.required_response_missing")
+          end
+          response_payload = load_envelope(store:, path:, expected_type: "retrieval_responses", run_id:)
+          response = terminal_response(response_payload, request)
+          snapshot = source_repository.snapshots_for_run(run_id).find do |candidate|
+            candidate.source_name == request.fetch("source_name") &&
+              candidate.account_identity.to_s == request["account_identity"].to_s
+          end
+          unless snapshot && snapshot_terminal_for?(snapshot, response)
             raise UsageError.new("bridge.required_response_missing")
           end
         end
+      end
+
+      def terminal_response(payload, request)
+        responses = payload.is_a?(Hash) ? payload["responses"] : nil
+        unless responses.is_a?(Array) && responses.length == 1
+          raise InvalidArtifact.new("bridge.invalid_response", exit_status: 65)
+        end
+        response = normalize(responses.fetch(0))
+        unless response["request_id"].to_s == request.fetch("id").to_s
+          raise InvalidArtifact.new("bridge.request_mismatch", exit_status: 65)
+        end
+        RetrievalResult.new(
+          source_name: request.fetch("source_name"), account_identity: request["account_identity"],
+          status: response.fetch("status"), data_status: response.fetch("data_status"),
+          cache_reason: response["cache_reason"], started_at: response.fetch("started_at"),
+          completed_at: response.fetch("completed_at"), records: Array(response["records"]),
+          next_cursor: response["next_cursor"], error: response["error"]
+        )
+        response
+      rescue KeyError, ArgumentError => error
+        raise InvalidArtifact.new("bridge.invalid_response", error.message, exit_status: 65)
+      end
+
+      def snapshot_terminal_for?(snapshot, response)
+        snapshot.status.to_s == response.fetch("status").to_s &&
+          snapshot.data_status.to_s == response.fetch("data_status").to_s &&
+          snapshot.record_count == Array(response["records"]).length &&
+          snapshot.proposed_cursor == response["next_cursor"]
       end
 
       def retrieval_requests(store:, run_id:)

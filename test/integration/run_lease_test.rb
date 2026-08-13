@@ -107,6 +107,41 @@ class CyborgRunLeaseTest < Minitest::Test
     refute File.exist?(@lease_one)
   end
 
+  def test_verified_lease_renews_and_holds_the_mutation_lock_until_block_returns
+    @manager.acquire(run_id: "run-1", lease_file: @lease_one)
+    renewing = Cyborg::Runs::LeaseManager.new(
+      @db, clock: Cyborg::FrozenClock.new(NOW + 30), lease_timeout_seconds: 60, lock_file: @lock_file
+    )
+    competing = Cyborg::Runs::LeaseManager.new(@db, clock: @clock, lock_file: @lock_file)
+    entered = Queue.new
+    release = Queue.new
+    finished = Queue.new
+
+    worker = Thread.new do
+      renewing.with_verified_lease(run_id: "run-1", lease_file: @lease_one) do |lease|
+        entered << lease
+        release.pop
+      end
+    end
+    lease = Timeout.timeout(2) { entered.pop }
+    assert_equal NOW + 90, lease.expires_at
+
+    contender = Thread.new do
+      competing.with_verified_lease(run_id: "run-1", lease_file: @lease_one) { finished << true }
+    end
+    sleep 0.05
+    assert_equal 0, finished.length
+
+    release << true
+    Timeout.timeout(2) { worker.join }
+    Timeout.timeout(2) { contender.join }
+    assert_equal 1, finished.length
+  ensure
+    release << true if release && release.empty? && worker&.alive?
+    worker&.join
+    contender&.join
+  end
+
   def test_expired_lease_fails_old_run_before_reacquisition
     @manager.acquire(run_id: "run-1", lease_file: @lease_one)
     expired_manager = Cyborg::Runs::LeaseManager.new(

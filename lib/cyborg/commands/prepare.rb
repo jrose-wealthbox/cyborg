@@ -6,7 +6,7 @@ module Cyborg
   module Commands
     class Prepare < Base
       def call(argv)
-        options = parse_options(argv, required: %w[profile artifact-dir], optional: %w[execution-mode])
+        options = parse_options(argv, required: %w[profile artifact-dir])
         profile = options.fetch("profile")
         artifact_root = Pathname(options.fetch("artifact-dir")).expand_path
         store = artifact_store(artifact_root)
@@ -18,7 +18,7 @@ module Cyborg
         )
         window = profile_window(profile)
         run = lifecycle.start(
-          profile:, execution_mode: options.fetch("execution-mode", "host"), window:,
+          profile:, execution_mode: "host", window:,
           configuration_fingerprint: container.config.fingerprint,
           prompt_version: container.config.to_h.dig("analysis", "prompt_version") || "prompt-1",
           backend_capability: container.config.to_h.dig("analysis", "backend") || "host", run_id:

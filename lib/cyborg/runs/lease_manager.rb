@@ -121,6 +121,8 @@ module Cyborg
         path = normalize_lease_file(lease_file)
         fingerprint = token_fingerprint(path)
         now = canonical_time(@clock.now)
+        heartbeat_at = now.utc.iso8601
+        expires_at = (now + @lease_timeout_seconds).utc.iso8601
 
         with_os_lock do
           row = @db[:run_leases].first
@@ -133,8 +135,12 @@ module Cyborg
             raise invalid_lease("run.lease_expired")
           end
 
+          refreshed = @db.transaction(mode: :immediate) do
+            @db[:run_leases].where(id: row.fetch(:id)).update(heartbeat_at:, expires_at:)
+            @db[:run_leases].first
+          end
           @known_lease_files[run_id] = path
-          yield lease_from_row(row, path)
+          yield lease_from_row(refreshed, path)
         end
       end
 
@@ -166,30 +172,35 @@ module Cyborg
       end
 
       def release!(run_id:, lease_file:)
+        with_os_lock { release_verified!(run_id:, lease_file:) }
+      end
+
+      # Releases a lease while the caller already owns the OS lock from
+      # #with_verified_lease. This keeps publication/abandonment and lease
+      # release in one ownership interval instead of reopening a race window.
+      def release_verified!(run_id:, lease_file:)
         run_id = run_id.to_s
         path = normalize_lease_file(lease_file)
         fingerprint = token_fingerprint(path)
         now = canonical_time(@clock.now)
         removed = false
 
-        with_os_lock do
-          @db.transaction(mode: :immediate) do
-            row = @db[:run_leases].first
-            unless row && row[:run_id].to_s == run_id && secure_equal?(row[:token_fingerprint].to_s, fingerprint)
-              raise invalid_lease("run.invalid_lease")
-            end
-            if lease_active?(row, now)
-              @db[:run_leases].where(id: 1).delete
-              removed = true
-            else
-              fail_expired_row!(row, now, lease_file: path)
-              raise invalid_lease("run.lease_expired")
-            end
+        @db.transaction(mode: :immediate) do
+          row = @db[:run_leases].first
+          unless row && row[:run_id].to_s == run_id && secure_equal?(row[:token_fingerprint].to_s, fingerprint)
+            raise invalid_lease("run.invalid_lease")
           end
-
-          delete_token_file(path) if removed
-          @known_lease_files.delete(run_id)
+          if lease_active?(row, now)
+            @db[:run_leases].where(id: row.fetch(:id)).delete
+            removed = true
+          else
+            fail_expired_row!(row, now, lease_file: path)
+            raise invalid_lease("run.lease_expired")
+          end
         end
+
+        delete_token_file(path) if removed
+        @known_lease_files.delete(run_id)
         removed
       end
 

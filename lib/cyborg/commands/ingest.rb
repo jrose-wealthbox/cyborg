@@ -7,43 +7,49 @@ module Cyborg
         options = parse_options(argv, required: %w[run lease-file input])
         run_id = options.fetch("run")
         lease_file = options.fetch("lease-file")
-        verify_and_renew!(run_id:, lease_file:)
-        run = run_repository.find(run_id)
-        raise InvalidArtifact.new("run.not_found", exit_status: 65) unless run
-        store = store_for_lease(lease_file)
-        input_path = Pathname(options.fetch("input")).expand_path
-        payload = load_envelope(store:, path: input_path, expected_type: "retrieval_responses", run_id:)
-        responses = payload.is_a?(Hash) ? (payload["responses"] || payload[:responses] || []) : payload
-        raise InvalidArtifact.new("bridge.invalid_responses", exit_status: 65) unless responses.is_a?(Array)
+        with_mutation_lease(run_id:, lease_file:) do
+          run = run_repository.find(run_id)
+          raise InvalidArtifact.new("run.not_found", exit_status: 65) unless run
+          store = store_for_lease(lease_file)
+          input_path = Pathname(options.fetch("input")).expand_path
+          payload = load_envelope(store:, path: input_path, expected_type: "retrieval_responses", run_id:)
+          responses = payload.is_a?(Hash) ? (payload["responses"] || payload[:responses] || []) : payload
+          raise InvalidArtifact.new("bridge.invalid_responses", exit_status: 65) unless responses.is_a?(Array)
 
-        requests = retrieval_requests(store:, run_id:)
-        request_by_id = requests.to_h { |request| [request.fetch("id"), request] }
-        ingested = []
-        responses.each do |raw_response|
-          response = normalize(raw_response)
-          request_id = response["request_id"].to_s
-          request = request_by_id[request_id]
-          raise InvalidArtifact.new("bridge.unknown_request", exit_status: 65) unless request
+          requests = retrieval_requests(store:, run_id:)
+          request_by_id = requests.to_h { |request| [request.fetch("id"), request] }
+          ingested = []
+          responses.each do |raw_response|
+            response = normalize(raw_response)
+            request_id = response["request_id"].to_s
+            request = request_by_id[request_id]
+            raise InvalidArtifact.new("bridge.unknown_request", exit_status: 65) unless request
 
-          response_payload = {"responses" => [response]}
-          filename = "retrieval-response-#{safe_request_id(request_id)}.json"
-          existing_path = store.root.join(run_id, filename)
-          if File.exist?(existing_path)
-            existing = load_envelope(store:, path: existing_path, expected_type: "retrieval_responses", run_id:)
-            if Bridge::CanonicalJSON.dump(existing) != Bridge::CanonicalJSON.dump(response_payload)
-              raise InvalidArtifact.new("bridge.changed_response", exit_status: 65)
+            response_payload = {"responses" => [response]}
+            filename = "retrieval-response-#{safe_request_id(request_id)}.json"
+            existing_path = store.root.join(run_id, filename)
+            if File.exist?(existing_path)
+              existing = load_envelope(store:, path: existing_path, expected_type: "retrieval_responses", run_id:)
+              if Bridge::CanonicalJSON.dump(existing) != Bridge::CanonicalJSON.dump(response_payload)
+                store.record_validation_failure!(
+                  run_id:, code: "bridge.changed_response", command: "ingest", request_id:,
+                  submitted_payload_sha256: Bridge::CanonicalJSON.sha256(response_payload),
+                  existing_payload_sha256: Bridge::CanonicalJSON.sha256(existing), at: container.clock.now
+                )
+                raise InvalidArtifact.new("bridge.changed_response", exit_status: 65)
+              end
+              next
             end
-            next
-          end
 
-          registration = registration_for(request.fetch("source_name"), request["account_identity"])
-          result = retrieval_result(response, request)
-          SourceIngestor.new(db:).ingest(run:, registration:, result:)
-          write_envelope(store:, run_id:, filename:, type: "retrieval_responses", payload: response_payload)
-          ingested << request_id
+            registration = registration_for(request.fetch("source_name"), request["account_identity"])
+            result = retrieval_result(response, request)
+            SourceIngestor.new(db:).ingest(run:, registration:, result:)
+            write_envelope(store:, run_id:, filename:, type: "retrieval_responses", payload: response_payload)
+            ingested << request_id
+          end
+          stdout.puts safe_json("run_id" => run_id, "status" => run.status, "ingested" => ingested)
+          0
         end
-        stdout.puts safe_json("run_id" => run_id, "status" => run.status, "ingested" => ingested)
-        0
       end
 
       private

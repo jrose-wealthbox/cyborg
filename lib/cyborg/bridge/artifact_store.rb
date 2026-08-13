@@ -89,6 +89,23 @@ module Cyborg
 
       alias cleanup cleanup!
 
+      # Records bounded, redacted bridge-validation metadata without retaining
+      # submitted source or analysis payloads. These entries share the audit
+      # file used by retention cleanup and remain after payload cleanup.
+      def record_validation_failure!(run_id:, code:, command:, at: Time.now.utc, **metadata)
+        run_id = safe_segment(run_id, "run_id")
+        now = at.is_a?(Time) ? at.utc.iso8601 : Time.iso8601(at.to_s).utc.iso8601
+        directory = @root.join(run_id)
+        ensure_directory(directory)
+        append_audit(directory, {
+          "run_id" => run_id, "artifact_type" => "bridge_validation_failure", "code" => code.to_s,
+          "command" => command.to_s, "created_at" => now
+        }.merge(metadata.transform_keys(&:to_s)))
+        directory.join(AUDIT_FILENAME)
+      rescue ArgumentError
+        raise Cyborg::PersistenceError.new("bridge.invalid_audit_timestamp")
+      end
+
       private
 
       def ensure_directory(path)

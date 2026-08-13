@@ -95,6 +95,10 @@ module Cyborg
         lease_manager.renew!(run_id:, lease_file:)
       end
 
+      def with_mutation_lease(run_id:, lease_file:, &block)
+        lease_manager.with_verified_lease(run_id:, lease_file:, &block)
+      end
+
       def load_envelope(store:, path:, expected_type:, run_id:)
         store.read(path:, expected_type:, expected_run_id: run_id)
       end

@@ -81,6 +81,14 @@ class CyborgBridgeCLITest < Minitest::Test
     assert_includes result[:stderr], "cli.unsupported_option"
   end
 
+  def test_prepare_rejects_undocumented_execution_mode
+    result = run_cli("prepare", "--profile", "default", "--artifact-dir", @artifacts, "--execution-mode", "host")
+
+    assert_equal 64, result[:status]
+    assert_empty result[:stdout]
+    assert_includes result[:stderr], "cli.unsupported_option"
+  end
+
   def test_second_prepare_reports_active_lease
     first = run_cli("prepare", "--profile", "default", "--artifact-dir", @artifacts)
     assert_equal 0, first[:status], first[:stderr]
@@ -129,6 +137,23 @@ class CyborgBridgeCLITest < Minitest::Test
     assert_equal 64, packet[:status]
     assert_includes packet[:stderr], "bridge.required_response_missing"
 
+    forged_response_path = File.join(@artifacts, run_id, "retrieval-response-#{request.fetch("id")}.json")
+    forged_payload = {
+      "responses" => [{
+        "request_id" => request.fetch("id"), "status" => "healthy", "data_status" => "fresh",
+        "started_at" => request.fetch("window_start_utc"), "completed_at" => request.fetch("window_end_utc"),
+        "records" => [], "next_cursor" => "page:2"
+      }]
+    }
+    forged_envelope = Cyborg::Bridge::Envelope.build(
+      type: "retrieval_responses", run_id:, payload: forged_payload, created_at: Time.now.utc
+    )
+    File.write(forged_response_path, Cyborg::Bridge::CanonicalJSON.dump(forged_envelope))
+    forged_packet = run_cli("analysis-packet", "--run", run_id, "--lease-file", handoff.fetch("lease_file"))
+    assert_equal 64, forged_packet[:status]
+    assert_includes forged_packet[:stderr], "bridge.required_response_missing"
+    File.delete(forged_response_path)
+
     response_payload = {
       "responses" => [{
         "request_id" => request.fetch("id"), "status" => "healthy", "data_status" => "fresh",
@@ -159,6 +184,11 @@ class CyborgBridgeCLITest < Minitest::Test
     File.write(response_path, Cyborg::Bridge::CanonicalJSON.dump(changed_envelope))
     changed = run_cli("ingest", "--run", run_id, "--lease-file", handoff.fetch("lease_file"), "--input", response_path)
     assert_equal 65, changed[:status]
+    audit_path = File.join(@artifacts, run_id, "artifact-audit.json")
+    audit = JSON.parse(File.read(audit_path))
+    assert_equal "bridge.changed_response", audit.fetch("entries").last.fetch("code")
+    assert_equal request.fetch("id"), audit.fetch("entries").last.fetch("request_id")
+    refute_includes File.read(audit_path), "page:2"
     packet = run_cli("analysis-packet", "--run", run_id, "--lease-file", handoff.fetch("lease_file"))
     assert_equal 0, packet[:status], packet[:stderr]
   end

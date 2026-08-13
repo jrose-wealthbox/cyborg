@@ -16,21 +16,24 @@ module Cyborg
           return idempotent_result!(store:, run_id:, document:, input_fingerprint:)
         end
 
-        verify_and_renew!(run_id:, lease_file:)
-        document = load_document(store:, path: Pathname(options.fetch("input")).expand_path, run_id:)
-        input_fingerprint = Bridge::CanonicalJSON.sha256(document)
+        with_mutation_lease(run_id:, lease_file:) do
+          run = run_repository.find(run_id)
+          raise InvalidArtifact.new("run.not_found", exit_status: 65) unless run
+          raise PersistenceError.new("run.not_publishable") unless run.status == "running"
 
-        packet = analysis_packet(store:, run_id:)
-        validated = Analysis::ResultValidator.new.validate(packet:, result: document.fetch("payload"))
-        result = Runs::Publisher.new(
-          db:, now: container.clock.now, footer: container.config.footer,
-          trusted_hosts: trusted_hosts
-        ).publish(run:, analysis: validated)
-        remember_result(store:, run_id:, document:)
-        lease_manager.release!(run_id:, lease_file:)
-        stdout.puts safe_json("run_id" => run_id, "status" => result.run.status, "presentation_id" => result.presentation.id,
-                              "warnings" => result.warnings)
-        0
+          document = load_document(store:, path: Pathname(options.fetch("input")).expand_path, run_id:)
+          packet = analysis_packet(store:, run_id:)
+          validated = Analysis::ResultValidator.new.validate(packet:, result: document.fetch("payload"))
+          result = Runs::Publisher.new(
+            db:, now: container.clock.now, footer: container.config.footer,
+            trusted_hosts: trusted_hosts
+          ).publish(run:, analysis: validated)
+          remember_result(store:, run_id:, document:)
+          lease_manager.release_verified!(run_id:, lease_file:)
+          stdout.puts safe_json("run_id" => run_id, "status" => result.run.status, "presentation_id" => result.presentation.id,
+                                "warnings" => result.warnings)
+          0
+        end
       end
 
       private
