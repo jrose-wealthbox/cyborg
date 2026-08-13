@@ -35,6 +35,13 @@ module Cyborg
         raise UsageError.new("cli.unknown_command")
       end
       config_path = extract_config!(argv)
+      if command == "config" && argv.first == "path"
+        argv.shift
+        raise UsageError.new("cli.unexpected_argument") unless argv.empty?
+
+        @stdout.puts(Config.path(path: config_path, env: @env))
+        return 0
+      end
       container = build_container(config_path)
       begin
         command_class, command_args = case command

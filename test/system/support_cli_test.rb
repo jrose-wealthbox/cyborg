@@ -34,6 +34,26 @@ class CyborgSupportCLITest < Minitest::Test
     assert_equal File.join(@home, ".config", "cyborg", "config.toml"), defaulted[:stdout].strip
   end
 
+  def test_config_path_bootstraps_without_loading_config_or_creating_runtime_state
+    isolated_home = File.join(@tmpdir, "isolated-home")
+    isolated_state = File.join(@tmpdir, "isolated-state")
+    isolated_artifacts = File.join(@tmpdir, "isolated-artifacts")
+    result = run_command(
+      File.expand_path("../../bin/cyborg", __dir__), ["config", "path"],
+      env: {
+        "HOME" => isolated_home, "CYBORG_CONFIG" => nil,
+        "CYBORG_STATE_DIR" => isolated_state, "CYBORG_ARTIFACT_DIR" => isolated_artifacts
+      }
+    )
+
+    assert_equal 0, result[:status], result[:stderr]
+    assert_equal File.join(isolated_home, ".config", "cyborg", "config.toml"), result[:stdout].strip
+    assert_empty result[:stderr]
+    refute_path_exists isolated_state
+    refute_path_exists isolated_artifacts
+    refute_path_exists File.join(isolated_home, ".config", "cyborg", "config.toml")
+  end
+
   def test_cache_aliases_mark_selected_rows_and_preserve_audit_rows
     ordinary = run_executable("bin/cyborg-no-cache")
     assert_equal 0, ordinary[:status], ordinary[:stderr]

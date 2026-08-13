@@ -59,9 +59,13 @@ module Cyborg
       :paths, :runtime, :analysis, :renderer, :output, :footer
 
     class << self
+      def path(path: nil, env: ENV)
+        resolve_config_path(path, normalize_env(env))
+      end
+
       def load(path:, env: ENV)
         environment = normalize_env(env)
-        resolved_path = resolve_config_path(path, environment)
+        resolved_path = self.path(path:, env: environment)
         unless File.file?(resolved_path)
           raise_invalid("config.not_found", "configuration file does not exist: #{resolved_path}")
         end
