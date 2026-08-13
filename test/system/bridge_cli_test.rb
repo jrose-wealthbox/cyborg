@@ -229,7 +229,9 @@ class CyborgBridgeCLITest < Minitest::Test
           "title" => index < 2 ? "Shared batch record" : "Conflicting batch record", "summary" => "A bounded batch record",
           "structured_fields" => {"batch" => index + 1}, "participants" => [], "owner_identity" => "me",
           "event_at" => request.fetch("window_end_utc"), "observed_at" => request.fetch("window_end_utc"),
-          "timestamp_kind" => "event_at", "content_fingerprint" => index < 2 ? "shared-batch-fp" : "zz-conflicting-batch-fp"
+          # Deliberately reuse a claimed fingerprint for a changed payload. The
+          # bridge must recompute identity from canonical record content.
+          "timestamp_kind" => "event_at", "content_fingerprint" => "shared-batch-fp"
         }], "next_cursor" => "capability:#{index + 1}"
       }
     end
@@ -258,7 +260,7 @@ class CyborgBridgeCLITest < Minitest::Test
 
     second_path = File.join(@artifacts, run_id, "batch-two.json")
     second_envelope = Cyborg::Bridge::Envelope.build(
-      type: "retrieval_responses", run_id:, payload: {"responses" => responses.values_at(1, 2)}, created_at: Time.now.utc
+      type: "retrieval_responses", run_id:, payload: {"responses" => [responses.fetch(2)]}, created_at: Time.now.utc
     )
     File.write(second_path, Cyborg::Bridge::CanonicalJSON.dump(second_envelope))
     second = run_cli("ingest", "--run", run_id, "--lease-file", handoff.fetch("lease_file"), "--input", second_path)
@@ -274,13 +276,28 @@ class CyborgBridgeCLITest < Minitest::Test
     database.close
     assert_equal 1, snapshot_count
     assert_equal 1, record_count
-    assert_equal 3, membership_count
+    assert_equal 2, membership_count
     assert_equal 1, observed_record_count
     assert_equal "Conflicting batch record", selected_title
     assert_equal 2, version_count
 
     duplicate = run_cli("ingest", "--run", run_id, "--lease-file", handoff.fetch("lease_file"), "--input", second_path)
     assert_equal 0, duplicate[:status], duplicate[:stderr]
+
+    still_blocked = run_cli("analysis-packet", "--run", run_id, "--lease-file", handoff.fetch("lease_file"))
+    assert_equal 64, still_blocked[:status]
+    assert_includes still_blocked[:stderr], "bridge.required_response_missing"
+
+    # B has a valid-looking standard-path artifact, but it was never ingested.
+    # Ingesting it explicitly should be the only event that establishes B's
+    # membership and unblocks the required source.
+    batch_b_path = File.join(@artifacts, run_id, "batch-b.json")
+    batch_b_envelope = Cyborg::Bridge::Envelope.build(
+      type: "retrieval_responses", run_id:, payload: {"responses" => [responses.fetch(1)]}, created_at: Time.now.utc
+    )
+    File.write(batch_b_path, Cyborg::Bridge::CanonicalJSON.dump(batch_b_envelope))
+    batch_b = run_cli("ingest", "--run", run_id, "--lease-file", handoff.fetch("lease_file"), "--input", batch_b_path)
+    assert_equal 0, batch_b[:status], batch_b[:stderr]
 
     changed_response = responses.fetch(0).merge("next_cursor" => "capability:changed")
     changed_path = File.join(@artifacts, run_id, "batch-changed.json")

@@ -75,7 +75,7 @@ module Cyborg
         )
       end
       fingerprint_payload = value.reject { |key, _item| key == "evidence" || key == "content_fingerprint" }
-      fingerprint = value["content_fingerprint"] || Bridge::CanonicalJSON.sha256(fingerprint_payload)
+      fingerprint = Bridge::CanonicalJSON.sha256(fingerprint_payload)
 
       NormalizedRecord.new(
         source_record_id: value.fetch("source_record_id"), record_kind: value.fetch("record_kind"),

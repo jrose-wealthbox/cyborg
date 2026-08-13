@@ -31,11 +31,15 @@ module Cyborg
             existing_path = store.root.join(run_id, filename)
             if File.exist?(existing_path)
               existing = load_envelope(store:, path: existing_path, expected_type: "retrieval_responses", run_id:)
-              if Bridge::CanonicalJSON.dump(existing) != Bridge::CanonicalJSON.dump(response_payload)
-                record_changed_response!(store:, run_id:, request_id:, submitted: response_payload, existing:)
-                raise InvalidArtifact.new("bridge.changed_response", exit_status: 65)
+              membership = request_membership(run_id:, request_id:)
+              if membership
+                if membership.fetch(:response_payload_sha256) != Bridge::CanonicalJSON.sha256(response_payload) ||
+                   Bridge::CanonicalJSON.dump(existing) != Bridge::CanonicalJSON.dump(response_payload)
+                  record_changed_response!(store:, run_id:, request_id:, submitted: response_payload, existing:)
+                  raise InvalidArtifact.new("bridge.changed_response", exit_status: 65)
+                end
+                next
               end
-              next if persisted_request_membership?(run_id:, request_id:, payload: response_payload)
             end
 
             previous = pending[request_id]
@@ -98,9 +102,8 @@ module Cyborg
         )
       end
 
-      def persisted_request_membership?(run_id:, request_id:, payload:)
-        digest = Bridge::CanonicalJSON.sha256(payload)
-        db[:source_snapshot_requests].where(run_id:, request_id:, response_payload_sha256: digest).first
+      def request_membership(run_id:, request_id:)
+        db[:source_snapshot_requests].where(run_id:, request_id:).first
       end
 
       def persisted_group_responses(store:, run_id:, requests:, request:)
@@ -108,11 +111,21 @@ module Cyborg
           next unless candidate.fetch("source_name") == request.fetch("source_name")
           next unless candidate["account_identity"].to_s == request["account_identity"].to_s
 
+          membership = db[:source_snapshot_requests].where(
+            run_id:, source_name: request.fetch("source_name"), account_identity: request["account_identity"].to_s,
+            request_id: candidate.fetch("id")
+          ).first
+          # A standard-path artifact is only trusted after the aggregate
+          # transaction records its request membership. This prevents a host
+          # from pre-populating an apparently valid response that later gets
+          # pulled into reaggregation.
+          next unless membership
+
           path = store.root.join(run_id, "retrieval-response-#{safe_request_id(candidate.fetch("id"))}.json")
           begin
             path.lstat
           rescue Errno::ENOENT
-            next
+            raise InvalidArtifact.new("bridge.persisted_response_missing", exit_status: 65)
           end
           payload = load_envelope(store:, path:, expected_type: "retrieval_responses", run_id:)
           values = payload.is_a?(Hash) ? payload["responses"] : nil
@@ -120,6 +133,14 @@ module Cyborg
 
           response = normalize(values.fetch(0))
           raise InvalidArtifact.new("bridge.request_mismatch", exit_status: 65) unless response["request_id"].to_s == candidate.fetch("id").to_s
+          payload_sha256 = Bridge::CanonicalJSON.sha256("responses" => [response])
+          if payload_sha256 != membership.fetch(:response_payload_sha256)
+            record_changed_response!(
+              store:, run_id:, request_id: candidate.fetch("id"), submitted: {"responses" => [response]},
+              existing: {"payload_sha256" => membership.fetch(:response_payload_sha256)}
+            )
+            raise InvalidArtifact.new("bridge.changed_response", exit_status: 65)
+          end
 
           response
         end
@@ -190,6 +211,10 @@ module Cyborg
 
       def normalized_record(raw)
         value = normalize(raw)
+        # The host may provide a hint, but it cannot choose record identity.
+        # Compute the fingerprint from canonical record content and exclude
+        # both the claimed fingerprint and evidence metadata from identity.
+        fingerprint_payload = value.reject { |key, _item| key == "evidence" || key == "content_fingerprint" }
         evidence = Array(value["evidence"]).map do |item|
           item = normalize(item)
           EvidenceDraft.new(
@@ -203,7 +228,7 @@ module Cyborg
           owner_identity: value["owner_identity"], canonical_target_type: value["canonical_target_type"],
           canonical_target_id: value["canonical_target_id"], deep_link: value["deep_link"], event_at: value["event_at"],
           latest_reply_at: value["latest_reply_at"], observed_at: value["observed_at"], timestamp_kind: value["timestamp_kind"],
-          content_fingerprint: value["content_fingerprint"] || Bridge::CanonicalJSON.sha256(value), evidence:
+          content_fingerprint: Bridge::CanonicalJSON.sha256(fingerprint_payload), evidence:
         )
       rescue KeyError, ArgumentError => error
         raise InvalidArtifact.new("bridge.invalid_record", error.message, exit_status: 65)
