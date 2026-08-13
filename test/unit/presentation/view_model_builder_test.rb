@@ -16,7 +16,7 @@ class CyborgPresentationViewModelBuilderTest < Minitest::Test
       run: run_value,
       snapshots: [degraded_snapshot],
       records: [
-        record("record-new", event_at: "2026-08-13T10:00:00Z", first_seen_after_baseline: true),
+        record("record-new", event_at: "2026-08-13T10:00:00Z"),
         record("record-future", event_at: "2026-08-13T12:05:00Z")
       ],
       actions: [
@@ -62,6 +62,17 @@ class CyborgPresentationViewModelBuilderTest < Minitest::Test
     assert_nil item.fetch("recency_marker")
   end
 
+  def test_health_refresh_is_not_inferred_from_a_degraded_snapshot_completion
+    view = @builder.call(
+      run: run_value,
+      snapshots: [degraded_snapshot.merge("last_fresh_refresh" => nil)],
+      records: [], actions: [], warnings: [], usage: {}
+    )
+
+    health = view.fetch("source_health").fetch(0)
+    assert_nil health.fetch("last_fresh_refresh")
+  end
+
   private
 
   def run_value
@@ -87,13 +98,13 @@ class CyborgPresentationViewModelBuilderTest < Minitest::Test
     )
   end
 
-  def record(id, event_at: "2026-08-13T11:00:00Z", first_seen_after_baseline: false)
+  def record(id, event_at: "2026-08-13T11:00:00Z")
     {
       "id" => id, "source_name" => "github", "account_identity" => "me", "source_record_id" => id,
       "record_kind" => "notification", "summary" => "Record #{id}", "event_at" => event_at,
       "latest_reply_at" => nil, "observed_at" => "2026-08-13T11:59:00Z",
       "timestamp_kind" => "event_at", "deep_link" => "https://github.example/#{id}",
-      "first_seen_after_baseline" => first_seen_after_baseline
+      "first_seen_at" => "2026-08-13T10:00:00Z"
     }
   end
 

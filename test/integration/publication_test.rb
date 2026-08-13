@@ -68,6 +68,45 @@ class CyborgPublicationTest < Minitest::Test
     assert_equal 1, item.fetch("state_version")
   end
 
+  def test_persisted_record_is_new_only_when_first_seen_after_prior_fresh_baseline
+    insert_prior_baseline
+    @db[:source_snapshots].where(id: "snapshot-github").update(prior_activated_snapshot_id: "snapshot-github-old")
+    insert_record_for_snapshot(
+      snapshot_id: "snapshot-github", id: "record-new", first_seen_at: "2026-08-13T11:30:00Z",
+      event_at: "2026-08-13T09:00:00Z", deep_link: "https://github.example/review"
+    )
+
+    result = Cyborg::Runs::Publisher.new(db: @db, now: Time.iso8601(NOW), trusted_hosts: ["github.example"]).publish(
+      run: persisted_run, analysis: analysis
+    )
+    item = result.view_model.fetch("sections").flat_map { |section| section.fetch("items") }.find { |value| value.fetch("id") == "record-new" }
+
+    assert_equal "🆕", item.fetch("recency_marker")
+  end
+
+  def test_failed_source_without_prior_baseline_has_unknown_last_fresh_refresh
+    result = Cyborg::Runs::Publisher.new(db: @db, now: Time.iso8601(NOW)).publish(
+      run: persisted_run, analysis: analysis
+    )
+    health = result.view_model.fetch("source_health").find { |value| value.fetch("source") == "slack" }
+
+    assert_nil health.fetch("last_fresh_refresh")
+  end
+
+  def test_publication_drops_adversarial_links_even_on_an_allowlisted_host
+    insert_record_for_snapshot(
+      snapshot_id: "snapshot-github", id: "record-adversarial", first_seen_at: NOW,
+      deep_link: "https://github.example/review?token=secret"
+    )
+
+    result = Cyborg::Runs::Publisher.new(db: @db, now: Time.iso8601(NOW), trusted_hosts: ["github.example"]).publish(
+      run: persisted_run, analysis: analysis
+    )
+    item = result.view_model.fetch("sections").flat_map { |section| section.fetch("items") }.find { |value| value.fetch("id") == "record-adversarial" }
+
+    assert_empty item.fetch("links")
+  end
+
   private
 
   def persisted_run
@@ -105,6 +144,36 @@ class CyborgPublicationTest < Minitest::Test
       id: "e1", observed_record_version_id: "version-1", source_url: "https://github.example/review",
       source_label: "GitHub", excerpt: "Review", evidence_at: NOW, relation: "supports"
     )
+  end
+
+  def insert_prior_baseline
+    @db[:runs].insert(
+      id: "run-old", profile: "default", execution_mode: "interactive", status: "completed",
+      window_start_utc: "2026-08-12T00:00:00Z", window_end_utc: "2026-08-12T23:59:00Z", display_timezone: "UTC",
+      configuration_fingerprint: "configuration", created_at: "2026-08-12T00:00:00Z", completed_at: "2026-08-12T11:00:00Z"
+    )
+    @db[:source_snapshots].insert(
+      id: "snapshot-github-old", run_id: "run-old", source_name: "github", account_identity: "me", adapter_version: "1",
+      started_at: "2026-08-12T10:59:00Z", completed_at: "2026-08-12T11:00:00Z", status: "healthy", data_status: "fresh",
+      cursor_disposition: "advance", proposed_cursor: "cursor-1", record_count: 0
+    )
+    @db[:source_baselines].insert(
+      source_name: "github", account_identity: "me", activated_snapshot_id: "snapshot-github-old",
+      activated_at: "2026-08-12T11:00:00Z", cursor: "cursor-1"
+    )
+  end
+
+  def insert_record_for_snapshot(snapshot_id:, id:, first_seen_at:, deep_link:, event_at: first_seen_at)
+    @db[:observed_records].insert(
+      id:, source_name: "github", account_identity: "me", source_record_id: id,
+      record_kind: "notification", summary: id, event_at:, observed_at: first_seen_at,
+      timestamp_kind: "event_at", content_fingerprint: "fp-#{id}", first_seen_at:, last_observed_at: first_seen_at,
+      deep_link:
+    )
+    @db[:observed_record_versions].insert(
+      id: "version-#{id}", observed_record_id: id, content_fingerprint: "vfp-#{id}", payload_json: "{}", created_at: first_seen_at
+    )
+    @db[:snapshot_records].insert(snapshot_id:, record_version_id: "version-#{id}")
   end
 
   def claim

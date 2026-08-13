@@ -15,7 +15,7 @@ module Cyborg
       attr_reader :db, :now
 
       def initialize(db:, now: nil, clock: nil, footer: nil, profile: "default",
-                     reconciler: nil, view_model_builder: nil, usage_recorder: nil)
+                     reconciler: nil, view_model_builder: nil, usage_recorder: nil, trusted_hosts: [])
         @db = db
         @now = now || (clock.respond_to?(:now) ? clock.now : Time.now.utc)
         @now = @now.is_a?(Time) ? @now.utc : Time.iso8601(@now.to_s).utc
@@ -27,7 +27,8 @@ module Cyborg
         @analyses = Repositories::AnalysisRepository.new(db)
         @presentations = Repositories::PresentationRepository.new(db)
         @reconciler = reconciler || Actions::Reconciler.new(db:, now: @now)
-        @builder = view_model_builder || Presentation::ViewModelBuilder.new(now: @now, footer:)
+        @builder = view_model_builder || Presentation::ViewModelBuilder.new(now: @now, footer:, trusted_hosts:)
+        @trusted_hosts = trusted_hosts
         @usage = usage_recorder || Analysis::UsageRecorder.new(db:, now: @now)
         @failure_stage = nil
       end
@@ -54,7 +55,7 @@ module Cyborg
           usage_summary = persist_usage(run_id:, usage: value(analysis, :usage, "usage"))
           snapshots = snapshots_for_view(run_id)
           actions = actions_for_view
-          records = snapshots.flat_map { |snapshot| @records.records_for_snapshot(snapshot.fetch("id")) }.map { |record| record_hash(record) }
+          records = records_for_view(snapshots)
           warnings = Array(reconciliation.warnings) + analysis_warnings + Array(value(analysis, :warnings, "warnings"))
           warnings.concat(source_warnings(snapshots))
           warnings << "analysis.cost_uncertain" if usage_summary.fetch("certainty") == "unknown"
@@ -131,13 +132,52 @@ module Cyborg
       def snapshots_for_view(run_id)
         @sources.snapshots_for_run(run_id).map do |snapshot|
           hash = snapshot_hash(snapshot)
-          baseline = @sources.baseline_for(snapshot.source_name, snapshot.account_identity)
-          if baseline
-            prior = @sources.snapshot(baseline.fetch(:activated_snapshot_id))
-            hash["last_fresh_refresh"] = prior.completed_at if prior
-          end
+          prior = prior_fresh_snapshot(hash)
+          hash["last_fresh_refresh"] = prior.completed_at if prior
+          hash["last_fresh_refresh"] = snapshot.completed_at if eligible_fresh_snapshot?(hash) && hash["last_fresh_refresh"].nil?
           hash
         end
+      end
+
+      def records_for_view(snapshots)
+        snapshots.flat_map do |snapshot|
+          prior = prior_fresh_snapshot(snapshot)
+          prior_ids = prior ? prior_record_ids(prior.id) : []
+          @records.records_for_snapshot(snapshot.fetch("id")).uniq(&:id).map do |record|
+            hash = record_hash(record)
+            hash["first_seen_after_baseline"] = first_seen_after_baseline?(record, prior, prior_ids)
+            hash
+          end
+        end
+      end
+
+      def first_seen_after_baseline?(record, prior, prior_ids)
+        return false unless prior
+        return false if prior_ids.include?(record.id)
+        return false unless record.first_seen_at && prior.completed_at
+
+        Time.iso8601(record.first_seen_at.to_s) > Time.iso8601(prior.completed_at.to_s)
+      rescue ArgumentError, TypeError
+        false
+      end
+
+      def prior_record_ids(snapshot_id)
+        db[:snapshot_records].join(:observed_record_versions, id: :record_version_id).where(snapshot_id:).select_map(:observed_record_id).uniq
+      end
+
+      def prior_fresh_snapshot(snapshot)
+        snapshot = snapshot.is_a?(Hash) ? snapshot : snapshot_hash(snapshot)
+        id = snapshot["prior_activated_snapshot_id"]
+        id ||= @sources.baseline_for(snapshot["source_name"], snapshot["account_identity"])&.fetch(:activated_snapshot_id, nil)
+        return nil unless id
+
+        candidate = @sources.snapshot(id)
+        candidate if candidate && candidate.status == "healthy" && candidate.data_status == "fresh"
+      end
+
+      def eligible_fresh_snapshot?(snapshot)
+        snapshot["status"] == "healthy" && snapshot["data_status"] == "fresh" &&
+          snapshot["cursor_disposition"] == "advance" && nonblank?(snapshot["proposed_cursor"])
       end
 
       def actions_for_view

@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "time"
+require "uri"
+require_relative "../redactor"
 
 module Cyborg
   module Presentation
@@ -9,12 +11,14 @@ module Cyborg
       TERMINAL_STATES = %w[done dismissed superseded].freeze
 
       def initialize(now: nil, clock: nil, footer: nil, recency_markers: true, urgency_markers: true,
-                     show_recency_markers: nil, show_urgency_markers: nil)
+                     show_recency_markers: nil, show_urgency_markers: nil, trusted_hosts: [], redactor: nil)
         @now = now || (clock.respond_to?(:now) ? clock.now : Time.now.utc)
         @now = @now.is_a?(Time) ? @now.utc : Time.iso8601(@now.to_s).utc
         @footer = footer
         @recency_markers = show_recency_markers.nil? ? recency_markers : show_recency_markers
         @urgency_markers = show_urgency_markers.nil? ? urgency_markers : show_urgency_markers
+        @trusted_hosts = normalize_hosts(trusted_hosts)
+        @redactor = redactor || Cyborg::Redactor.new
       end
 
       def call(run:, snapshots:, records:, actions:, warnings:, usage:)
@@ -103,7 +107,7 @@ module Cyborg
           {"id" => "source:#{snapshot["source_name"]}:#{snapshot["account_identity"]}",
            "summary" => health_summary_text(snapshot), "state" => snapshot["status"],
            "source" => snapshot["source_name"], "account" => snapshot["account_identity"],
-           "cache_reason" => snapshot["cache_reason"], "last_fresh_refresh" => snapshot["last_fresh_refresh"] || snapshot["completed_at"],
+           "cache_reason" => snapshot["cache_reason"], "last_fresh_refresh" => last_fresh_refresh(snapshot),
            "remediation" => snapshot["error_remediation"], "inference_impact" => inference_impact(snapshot),
            "markers" => [], "links" => []}
         end
@@ -114,7 +118,7 @@ module Cyborg
           snapshot = normalize_hash(raw)
           {"source" => snapshot["source_name"], "account" => snapshot["account_identity"],
            "status" => effective_status(snapshot), "data_status" => snapshot["data_status"],
-           "cache_reason" => snapshot["cache_reason"], "last_fresh_refresh" => snapshot["last_fresh_refresh"] || snapshot["completed_at"],
+           "cache_reason" => snapshot["cache_reason"], "last_fresh_refresh" => last_fresh_refresh(snapshot),
            "remediation" => snapshot["error_remediation"], "inference_impact" => inference_impact(snapshot)}
         end
       end
@@ -122,7 +126,7 @@ module Cyborg
       def health_summary_text(snapshot)
         status = effective_status(snapshot)
         text = "#{snapshot["source_name"]} (#{snapshot["account_identity"]}): #{status}"
-        text += "; cached from #{snapshot["completed_at"]}" if snapshot["data_status"] == "cached" && snapshot["completed_at"]
+        text += "; cached from #{last_fresh_refresh(snapshot) || "unknown"}" if snapshot["data_status"] == "cached"
         text += "; #{snapshot["error_remediation"]}" if snapshot["error_remediation"]
         text
       end
@@ -205,8 +209,39 @@ module Cyborg
           value = link.to_s
           next unless value.match?(/\Ahttps:\/\/[^\s]+\z/i)
 
-          value
+          uri = URI.parse(value)
+          next unless uri.scheme == "https" && uri.userinfo.nil? && uri.query.nil? && uri.fragment.nil?
+          next unless @trusted_hosts.include?(uri.host.to_s.downcase)
+          next if uri.path.to_s.match?(%r{(?:\A|/)(?:token|secret|password|credential|api[_-]?key)(?:[/=]|\z)}i)
+          next unless @redactor.call(uri.to_s) == uri.to_s
+
+          uri.to_s
+        rescue URI::InvalidURIError
+          nil
         end.uniq
+      end
+
+      def last_fresh_refresh(snapshot)
+        explicit = snapshot["last_fresh_refresh"]
+        return explicit unless explicit.nil? || explicit.to_s.empty?
+        return snapshot["completed_at"] if snapshot["status"] == "healthy" && snapshot["data_status"] == "fresh" &&
+          snapshot["cursor_disposition"] == "advance" && snapshot["proposed_cursor"].to_s != ""
+
+        nil
+      end
+
+      def normalize_hosts(hosts)
+        Array(hosts).filter_map do |host|
+          value = host.to_s.strip.downcase
+          next if value.empty?
+
+          value = URI.parse(value).host if value.include?("://")
+          next if value.to_s.empty? || value.include?("/") || value.include?(" ")
+
+          value
+        rescue URI::InvalidURIError
+          nil
+        end.uniq.freeze
       end
 
       def deep_freeze(value)
