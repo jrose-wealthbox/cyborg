@@ -28,5 +28,16 @@ easter = false
 # max_records = 500
 # max_pages = 10
 
+# For deterministic local checks, use the bounded fixture adapter. It reads
+# only this local file and requires no credentials or network access.
+# [sources.fixture]
+# enabled = true
+# adapter = "fixture"
+# account = "fixture"
+# path = "test/fixtures/sources/fixture-records.json"
+# [sources.fixture.limits]
+# max_records = 2
+# max_response_bytes = 65536
+
 [paths]
 # state_dir = "~/Library/Application Support/CYBORG"

@@ -1,0 +1,23 @@
+{
+  "source": "local_git",
+  "status": "healthy",
+  "data_status": "fresh",
+  "next_cursor": "git-cursor-2",
+  "records": [
+    {
+      "source_record_id": "commit-abc123",
+      "record_kind": "commit",
+      "title": "Improve bridge documentation",
+      "summary": "Improve bridge documentation",
+      "structured_fields": {"repository": "cyborg", "files_changed": 1},
+      "participants": ["developer@example.com"],
+      "owner_identity": "developer@example.com",
+      "canonical_target_type": "local_git_commit",
+      "canonical_target_id": "abc123",
+      "event_at": "2026-08-13T11:45:00Z",
+      "observed_at": "2026-08-13T12:01:00Z",
+      "timestamp_kind": "event_at",
+      "evidence": []
+    }
+  ]
+}

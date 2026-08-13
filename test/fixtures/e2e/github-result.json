@@ -1,0 +1,24 @@
+{
+  "source": "github",
+  "status": "healthy",
+  "data_status": "fresh",
+  "next_cursor": "github-cursor-2",
+  "records": [
+    {
+      "source_record_id": "github-42",
+      "record_kind": "review",
+      "title": "Review requested",
+      "summary": "Please review pull request 42",
+      "structured_fields": {"repository": "acme/cyborg"},
+      "participants": ["alice"],
+      "owner_identity": "me",
+      "canonical_target_type": "github_pull_request",
+      "canonical_target_id": "42",
+      "deep_link": "https://github.example/acme/cyborg/pull/42",
+      "event_at": "2026-08-13T12:00:00Z",
+      "observed_at": "2026-08-13T12:01:00Z",
+      "timestamp_kind": "event_at",
+      "evidence": [{"source_url": "https://github.example/acme/cyborg/pull/42", "source_label": "GitHub", "evidence_at": "2026-08-13T12:00:00Z", "relation": "supports"}]
+    }
+  ]
+}
