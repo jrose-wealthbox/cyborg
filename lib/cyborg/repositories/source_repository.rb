@@ -28,6 +28,7 @@ module Cyborg
         else
           options
         end
+        validate_timestamps!(attrs, %i[started_at completed_at])
         db[:source_snapshots].insert(attrs)
         snapshot(attrs.fetch(:id))
       end
@@ -48,6 +49,7 @@ module Cyborg
       end
 
       def activate_baseline(source_name:, account_identity:, snapshot_id:, activated_at:, cursor: nil)
+        validate_timestamp!(activated_at, field: :activated_at)
         values = {source_name:, account_identity:, activated_snapshot_id: snapshot_id, activated_at:, cursor:}
         db[:source_baselines].insert_conflict(
           target: %i[source_name account_identity],

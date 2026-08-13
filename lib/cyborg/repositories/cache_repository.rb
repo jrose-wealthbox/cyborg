@@ -7,6 +7,7 @@ module Cyborg
   module Repositories
     class CacheRepository < Base
       def fetch(stage:, cache_key:, now:)
+        validate_timestamp!(now.respond_to?(:utc) ? now.utc.iso8601 : now, field: :now)
         now = now.utc.iso8601 if now.respond_to?(:utc)
         record = db[:cache_entries].where(stage:, cache_key:).where { expires_at > now }.where(invalidated_at: nil).first
         record && record.merge(payload: JSON.parse(record.fetch(:payload_json)))
@@ -14,6 +15,7 @@ module Cyborg
 
       def store(attributes)
         attrs = attributes.to_h
+        validate_timestamps!(attrs, %i[created_at expires_at invalidated_at])
         payload = attrs.delete(:payload)
         attrs[:payload_json] ||= JSON.generate(payload) if payload
         db[:cache_entries].insert_conflict(
@@ -23,8 +25,11 @@ module Cyborg
         db[:cache_entries].where(stage: attrs.fetch(:stage), cache_key: attrs.fetch(:cache_key)).first
       end
 
-      def invalidate(stage:, cache_key:, invalidated_at:, reason:)
-        db[:cache_entries].where(stage:, cache_key:).update(invalidated_at:, invalidation_reason: reason)
+      def invalidate(stage:, cache_key:, invalidated_at:, command:, run_id: nil, reason:)
+        validate_timestamp!(invalidated_at, field: :invalidated_at)
+        db[:cache_entries].where(stage:, cache_key:).update(
+          invalidated_at:, invalidation_command: command, invalidation_run_id: run_id, invalidation_reason: reason
+        )
         true
       end
     end

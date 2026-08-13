@@ -2,7 +2,7 @@
 
 Sequel.migration do
   change do
-    create_table(:analysis_results, strict: true) do
+    create_table(:analysis_results, **Cyborg::Database.strict_table_options(self)) do
       String :id, text: true, primary_key: true
       foreign_key :run_id, :runs, type: String, text: true, null: false
       String :task_id, text: true, null: false
@@ -20,7 +20,7 @@ Sequel.migration do
       index :run_id
     end
 
-    create_table(:presentation_results, strict: true) do
+    create_table(:presentation_results, **Cyborg::Database.strict_table_options(self)) do
       String :id, text: true, primary_key: true
       foreign_key :run_id, :runs, type: String, text: true, null: false
       String :profile, text: true, null: false
@@ -30,7 +30,7 @@ Sequel.migration do
       index %i[run_id profile], unique: true
     end
 
-    create_table(:cache_entries, strict: true) do
+    create_table(:cache_entries, **Cyborg::Database.strict_table_options(self)) do
       String :id, text: true, primary_key: true
       String :stage, text: true, null: false
       String :cache_key, text: true, null: false
@@ -49,7 +49,7 @@ Sequel.migration do
       index :expires_at
     end
 
-    create_table(:usage_records, strict: true) do
+    create_table(:usage_records, **Cyborg::Database.strict_table_options(self)) do
       String :id, text: true, primary_key: true
       foreign_key :run_id, :runs, type: String, text: true, null: false
       String :task_id, text: true
@@ -69,7 +69,7 @@ Sequel.migration do
       index :session_id
     end
 
-    create_table(:application_state, strict: true) do
+    create_table(:application_state, **Cyborg::Database.strict_table_options(self)) do
       String :key, text: true, primary_key: true
       String :value, text: true, null: false
       String :updated_at, text: true, null: false

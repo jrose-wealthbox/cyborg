@@ -18,7 +18,7 @@ class CyborgMigrationTest < Minitest::Test
     first_tables = @db.tables.sort
     assert_equal true, @db.migrate!
     assert_equal first_tables, @db.tables.sort
-    assert_equal [3], @db[:schema_info].select_map(:version)
+    assert_equal [4], @db[:schema_info].select_map(:version)
   end
 
   def test_immediate_transaction_returns_block_value_and_rolls_back_on_error
@@ -38,5 +38,11 @@ class CyborgMigrationTest < Minitest::Test
       end
     end
     assert_equal "value", @db[:application_state].get(:value)
+  end
+
+  def test_strict_table_options_follow_sqlite_capability
+    assert_equal true, Cyborg::Database.strict_tables_supported?("3.53.2")
+    assert_equal false, Cyborg::Database.strict_tables_supported?("3.36.0")
+    assert_equal({strict: true}, Cyborg::Database.strict_table_options(@db))
   end
 end

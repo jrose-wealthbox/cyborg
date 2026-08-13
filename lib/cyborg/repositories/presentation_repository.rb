@@ -7,6 +7,7 @@ module Cyborg
     class PresentationRepository < Base
       def create(attributes)
         attrs = attributes.to_h
+        validate_timestamps!(attrs, %i[created_at])
         db[:presentation_results].insert(attrs)
         find(attrs.fetch(:id))
       end

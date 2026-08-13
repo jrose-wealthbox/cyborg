@@ -7,10 +7,14 @@ module Cyborg
     class RecordRepository < Base
       def create_or_update_record(attributes)
         attrs = attributes.to_h
+        validate_timestamps!(attrs, %i[event_at latest_reply_at observed_at first_seen_at last_observed_at])
         identity = attrs.slice(:source_name, :account_identity, :source_record_id, :record_kind)
         existing = db[:observed_records].where(identity).first
         if existing
-          db[:observed_records].where(id: existing.fetch(:id)).update(attrs)
+          mutable = attrs.reject do |key, _value|
+            %i[id source_name account_identity source_record_id record_kind first_seen_at].include?(key)
+          end
+          db[:observed_records].where(id: existing.fetch(:id)).update(mutable)
           observed_record(existing.fetch(:id))
         else
           db[:observed_records].insert(attrs)
@@ -32,6 +36,13 @@ module Cyborg
 
       def create_version(attributes)
         attrs = attributes.to_h
+        validate_timestamps!(attrs, %i[created_at])
+        existing = db[:observed_record_versions].where(
+          observed_record_id: attrs.fetch(:observed_record_id),
+          content_fingerprint: attrs.fetch(:content_fingerprint)
+        ).first
+        return version(existing.fetch(:id)) if existing
+
         db[:observed_record_versions].insert(attrs)
         version(attrs.fetch(:id))
       end
@@ -49,6 +60,7 @@ module Cyborg
 
       def create_evidence(attributes)
         attrs = attributes.to_h
+        validate_timestamps!(attrs, %i[evidence_at])
         db[:evidence].insert(attrs)
         evidence(attrs.fetch(:id))
       end

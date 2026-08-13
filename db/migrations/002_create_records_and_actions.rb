@@ -2,7 +2,7 @@
 
 Sequel.migration do
   change do
-    create_table(:observed_records, strict: true) do
+    create_table(:observed_records, **Cyborg::Database.strict_table_options(self)) do
       String :id, text: true, primary_key: true
       String :source_name, text: true, null: false
       String :account_identity, text: true, null: false
@@ -28,7 +28,7 @@ Sequel.migration do
       index %i[source_name account_identity]
     end
 
-    create_table(:observed_record_versions, strict: true) do
+    create_table(:observed_record_versions, **Cyborg::Database.strict_table_options(self)) do
       String :id, text: true, primary_key: true
       foreign_key :observed_record_id, :observed_records, type: String, text: true, null: false
       String :content_fingerprint, text: true, null: false
@@ -39,14 +39,14 @@ Sequel.migration do
       index :observed_record_id
     end
 
-    create_table(:snapshot_records, strict: true) do
+    create_table(:snapshot_records, **Cyborg::Database.strict_table_options(self)) do
       foreign_key :snapshot_id, :source_snapshots, type: String, text: true, null: false
       foreign_key :record_version_id, :observed_record_versions, type: String, text: true, null: false
 
       primary_key %i[snapshot_id record_version_id]
     end
 
-    create_table(:evidence, strict: true) do
+    create_table(:evidence, **Cyborg::Database.strict_table_options(self)) do
       String :id, text: true, primary_key: true
       foreign_key :observed_record_version_id, :observed_record_versions, type: String, text: true, null: false
       String :source_url, text: true, null: false
@@ -60,7 +60,7 @@ Sequel.migration do
       index :observed_record_version_id
     end
 
-    create_table(:action_series, strict: true) do
+    create_table(:action_series, **Cyborg::Database.strict_table_options(self)) do
       String :id, text: true, primary_key: true
       String :current_subject_key, text: true, null: false
       Integer :identity_version, null: false
@@ -76,7 +76,7 @@ Sequel.migration do
       index %i[current_subject_key identity_version], unique: true
     end
 
-    create_table(:inferred_actions, strict: true) do
+    create_table(:inferred_actions, **Cyborg::Database.strict_table_options(self)) do
       String :id, text: true, primary_key: true
       foreign_key :series_id, :action_series, type: String, text: true, null: false
       Integer :occurrence_number, null: false
@@ -104,7 +104,7 @@ Sequel.migration do
       index %i[user_state inference_status]
     end
 
-    create_table(:action_key_aliases, strict: true) do
+    create_table(:action_key_aliases, **Cyborg::Database.strict_table_options(self)) do
       String :subject_key, text: true, primary_key: true
       foreign_key :series_id, :action_series, type: String, text: true, null: false
       Integer :identity_version, null: false
@@ -114,7 +114,7 @@ Sequel.migration do
       index :series_id
     end
 
-    create_table(:action_evidence, strict: true) do
+    create_table(:action_evidence, **Cyborg::Database.strict_table_options(self)) do
       foreign_key :action_id, :inferred_actions, type: String, text: true, null: false
       foreign_key :evidence_id, :evidence, type: String, text: true, null: false
       foreign_key :first_seen_run_id, :runs, type: String, text: true, null: false
@@ -125,7 +125,7 @@ Sequel.migration do
       primary_key %i[action_id evidence_id]
     end
 
-    create_table(:action_transitions, strict: true) do
+    create_table(:action_transitions, **Cyborg::Database.strict_table_options(self)) do
       primary_key :id
       foreign_key :action_id, :inferred_actions, type: String, text: true, null: false
       String :from_state, text: true, null: false
@@ -137,7 +137,7 @@ Sequel.migration do
       index %i[action_id changed_at]
     end
 
-    create_table(:action_successors, strict: true) do
+    create_table(:action_successors, **Cyborg::Database.strict_table_options(self)) do
       foreign_key :predecessor_action_id, :inferred_actions, type: String, text: true, null: false
       foreign_key :successor_action_id, :inferred_actions, type: String, text: true, null: false
       String :created_at, text: true, null: false

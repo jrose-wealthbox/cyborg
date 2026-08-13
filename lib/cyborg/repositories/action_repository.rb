@@ -7,6 +7,7 @@ module Cyborg
     class ActionRepository < Base
       def create_series(attributes)
         attrs = attributes.to_h
+        validate_timestamps!(attrs, %i[created_at updated_at])
         db[:action_series].insert(attrs)
         series(attrs.fetch(:id))
       end
@@ -30,6 +31,7 @@ module Cyborg
 
       def create_action(attributes)
         attrs = attributes.to_h
+        validate_timestamps!(attrs, %i[first_seen_at last_seen_at due_at terminal_at snoozed_until])
         db[:inferred_actions].insert(attrs)
         action(attrs.fetch(:id))
       end
@@ -39,6 +41,7 @@ module Cyborg
       end
 
       def update_action(id:, attributes:)
+        validate_timestamps!(attributes.to_h, %i[first_seen_at last_seen_at due_at terminal_at snoozed_until])
         db[:inferred_actions].where(id:).update(attributes.to_h)
         action(id)
       end
@@ -55,11 +58,14 @@ module Cyborg
       end
 
       def transition(attributes)
-        db[:action_transitions].insert(attributes.to_h)
+        attrs = attributes.to_h
+        validate_timestamps!(attrs, %i[changed_at])
+        db[:action_transitions].insert(attrs)
         true
       end
 
       def link_successor(predecessor_action_id:, successor_action_id:, created_at:)
+        validate_timestamp!(created_at, field: :created_at)
         db[:action_successors].insert(predecessor_action_id:, successor_action_id:, created_at:)
         true
       end

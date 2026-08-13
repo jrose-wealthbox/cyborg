@@ -31,6 +31,15 @@ module Cyborg
 
     module_function
 
+    def strict_tables_supported?(version)
+      numbers = version.to_s.split(".").first(3).map(&:to_i)
+      (numbers <=> [3, 37, 0]) >= 0
+    end
+
+    def strict_table_options(db)
+      strict_tables_supported?(db.fetch(Sequel.lit("SELECT sqlite_version() AS version")).get(:version)) ? {strict: true} : {}
+    end
+
     def connect(path:, busy_timeout_ms: BUSY_TIMEOUT_MS)
       timeout = Integer(busy_timeout_ms)
       raise ArgumentError, "busy timeout must be positive and bounded" unless timeout.positive? && timeout <= 30_000

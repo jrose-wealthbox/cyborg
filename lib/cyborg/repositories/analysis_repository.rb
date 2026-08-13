@@ -7,6 +7,7 @@ module Cyborg
     class AnalysisRepository < Base
       def create(attributes)
         attrs = attributes.to_h
+        validate_timestamps!(attrs, %i[created_at completed_at])
         db[:analysis_results].insert(attrs)
         find(attrs.fetch(:id))
       end

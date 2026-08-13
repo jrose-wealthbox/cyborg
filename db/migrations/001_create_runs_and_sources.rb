@@ -2,7 +2,7 @@
 
 Sequel.migration do
   change do
-    create_table(:runs, strict: true) do
+    create_table(:runs, **Cyborg::Database.strict_table_options(self)) do
       String :id, text: true, primary_key: true
       String :profile, text: true, null: false
       String :execution_mode, text: true, null: false
@@ -25,7 +25,7 @@ Sequel.migration do
 
     # A singleton row makes the active lease invariant structural.  Expiration
     # is handled by the run lifecycle, while this table prevents two owners.
-    create_table(:run_leases, strict: true) do
+    create_table(:run_leases, **Cyborg::Database.strict_table_options(self)) do
       Integer :id, primary_key: true, default: 1
       foreign_key :run_id, :runs, type: String, text: true, null: false
       String :token_fingerprint, text: true, null: false
@@ -37,7 +37,7 @@ Sequel.migration do
       index :run_id, unique: true
     end
 
-    create_table(:source_snapshots, strict: true) do
+    create_table(:source_snapshots, **Cyborg::Database.strict_table_options(self)) do
       String :id, text: true, primary_key: true
       foreign_key :run_id, :runs, type: String, text: true, null: false
       String :source_name, text: true, null: false
@@ -61,7 +61,7 @@ Sequel.migration do
       index %i[source_name account_identity]
     end
 
-    create_table(:source_baselines, strict: true) do
+    create_table(:source_baselines, **Cyborg::Database.strict_table_options(self)) do
       String :source_name, text: true, null: false
       String :account_identity, text: true, null: false
       foreign_key :activated_snapshot_id, :source_snapshots, type: String, text: true, null: false

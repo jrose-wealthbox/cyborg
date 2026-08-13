@@ -9,6 +9,7 @@ module Cyborg
 
       def create(attributes = nil, **options)
         attrs = (attributes || options).to_h
+        validate_timestamps!(attrs, %i[window_start_utc window_end_utc created_at completed_at])
         db[TABLE].insert(attrs)
         find(attrs.fetch(:id))
       end
@@ -18,12 +19,16 @@ module Cyborg
       end
 
       def update(id, attributes)
+        validate_timestamps!(attributes.to_h, %i[window_start_utc window_end_utc created_at completed_at])
         db[TABLE].where(id:).update(attributes)
         find(id)
       end
 
       def update_status(id:, status:, completed_at: nil, usage_summary_json: nil)
-        update(id, status:, completed_at:, usage_summary_json:)
+        attributes = {status:}
+        attributes[:completed_at] = completed_at unless completed_at.nil?
+        attributes[:usage_summary_json] = usage_summary_json unless usage_summary_json.nil?
+        update(id, attributes)
       end
 
       def all(status: nil)
@@ -44,10 +49,16 @@ module Cyborg
       end
 
       def set_latest_renderable!(run_id:, updated_at:)
+        validate_timestamp!(updated_at, field: :updated_at)
+        run = find(run_id)
+        unless run && %w[completed degraded].include?(run.status)
+          raise Cyborg::PersistenceError.new("run.not_renderable")
+        end
+
         db[:application_state].insert_conflict(target: :key, update: {value: run_id, updated_at:}).insert(
           key: "latest_renderable_run_id", value: run_id, updated_at:
         )
-        find(run_id)
+        run
       end
     end
   end
