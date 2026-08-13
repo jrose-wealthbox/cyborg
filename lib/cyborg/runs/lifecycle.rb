@@ -46,9 +46,9 @@ module Cyborg
       end
 
       def start(profile:, execution_mode:, window:, configuration_fingerprint:,
-                prompt_version: nil, backend_capability: nil)
+                prompt_version: nil, backend_capability: nil, run_id: nil)
         now = canonical_time(@clock.now)
-        run_id = SecureRandom.uuid
+        run_id ||= SecureRandom.uuid
         prior_renderable_run_id = @runs.latest_renderable_id
         attributes = {
           id: run_id,

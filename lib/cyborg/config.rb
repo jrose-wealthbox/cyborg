@@ -51,7 +51,7 @@ module Cyborg
     ENUMS = {
       "execution_mode" => %w[interactive unattended host],
       "mode" => %w[interactive unattended host],
-      "adapter" => %w[github local_git git],
+      "adapter" => %w[github local_git git fixture],
       "cache_class" => %w[ordinary expensive]
     }.freeze
 
@@ -185,6 +185,16 @@ module Cyborg
 
     def database_path
       Pathname.new(@paths.fetch("database"))
+    end
+
+    # Source adapter metadata such as transport, hostname, and operation
+    # allowlists is retained for bridge orchestration. It is already part of
+    # the redacted, deeply frozen configuration and contains no credentials.
+    def source_options(name = nil)
+      values = fetch_hash(@raw, "sources", "source")
+      return values if name.nil?
+
+      values.fetch(name.to_s, {})
     end
 
     def fingerprint
@@ -387,7 +397,7 @@ module Cyborg
           raise_invalid("config.invalid_source", "source configuration must be a table")
         end
         adapter = (value["adapter"] || value["type"] || name).to_s
-        unless %w[github local_git git].include?(adapter)
+        unless %w[github local_git git fixture].include?(adapter)
           raise_invalid("config.invalid_enum", "unsupported source adapter")
         end
         repositories = value["repositories"] || value["repository_roots"] || value["roots"] || []

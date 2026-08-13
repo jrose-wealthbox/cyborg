@@ -21,6 +21,10 @@ module Cyborg
         "capabilities" => ["authored_activity"],
         "operations" => {"authored_activity" => "local_git.activity.read"},
         "cache_policy" => "expensive"
+      },
+      "fixture" => {
+        "capabilities" => ["records"],
+        "operations" => {"records" => "fixture.records.read"}
       }
     }.freeze
 
