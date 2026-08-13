@@ -97,3 +97,36 @@ bundle exec ruby -Itest test/integration/run_lease_test.rb
 
 Fix commit: this report is included in the commit titled
 `fix: recover expired lease files safely`.
+
+## Fix round 2 (2026-08-13T05:41:58Z)
+
+### RED
+
+Added fresh-manager regressions for the public expiry API:
+
+- `test_public_expiry_reclaims_file_from_fresh_manager_when_path_is_explicit`
+  called `LeaseManager#fail_expired_lease!(lease_file: path)`, asserted the
+  old run failed, the lease row and stale token file were removed, and then
+  reacquired the same path.
+- `test_public_expiry_forwards_explicit_lease_path` exercised the corresponding
+  `RunLifecycle` caller.
+
+Before the fix, the first test failed with `ArgumentError` because the public
+method accepted no lease path; a fresh manager therefore had no safe way to
+remove the old token file.
+
+### GREEN
+
+`LeaseManager#fail_expired_lease!` now accepts an optional explicit
+`lease_file:` and passes only that validated path into expiry cleanup.
+`RunLifecycle#fail_expired_lease!` defaults to and forwards its configured
+lease path. Cleanup remains constrained to regular mode-`0600` files and never
+infers or deletes a broad filesystem path.
+
+Focused tests:
+
+```text
+bundle exec ruby -Itest test/integration/run_lease_test.rb && \
+bundle exec ruby -Itest test/integration/run_lifecycle_test.rb
+15 runs, 78 assertions, 0 failures, 0 errors
+```

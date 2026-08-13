@@ -112,8 +112,8 @@ module Cyborg
         @runs.find(run_id)
       end
 
-      def fail_expired_lease!
-        @lease_manager.fail_expired_lease!
+      def fail_expired_lease!(lease_file: @lease_file)
+        @lease_manager.fail_expired_lease!(lease_file:)
       end
 
       private

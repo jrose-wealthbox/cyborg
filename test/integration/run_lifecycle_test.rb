@@ -93,6 +93,24 @@ class CyborgRunLifecycleTest < Minitest::Test
     assert_equal "running", new_run.status
   end
 
+  def test_public_expiry_forwards_explicit_lease_path
+    old_run = start_run
+    fresh = Cyborg::Runs::RunLifecycle.new(
+      @db,
+      clock: Cyborg::FrozenClock.new(NOW + 61),
+      lease_timeout_seconds: 60,
+      lease_file: @lease_file,
+      lock_file: @lock_file
+    )
+
+    expired = fresh.fail_expired_lease!(lease_file: @lease_file)
+
+    assert_equal old_run.id, expired.id
+    assert_equal "failed", @db[:runs].where(id: old_run.id).get(:status)
+    assert_empty @db[:run_leases].all
+    refute File.exist?(@lease_file)
+  end
+
   private
 
   def start_run

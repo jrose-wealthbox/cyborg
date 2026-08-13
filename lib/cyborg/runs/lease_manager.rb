@@ -195,17 +195,17 @@ module Cyborg
 
       # Reclaims an expired singleton lease.  The old run is failed before the
       # row is removed, so a later acquire can never silently reuse it.
-      def fail_expired_lease!
+      def fail_expired_lease!(lease_file: nil)
         now = canonical_time(@clock.now)
+        path = lease_file.nil? ? nil : normalize_lease_file(lease_file)
         with_os_lock do
           run = @db.transaction(mode: :immediate) do
             row = @db[:run_leases].first
             if row && !lease_active?(row, now)
-              fail_expired_row!(row, now)
+              fail_expired_row!(row, now, lease_file: path)
               @db[:runs].where(id: row[:run_id]).first
             end
           end
-          delete_token_file(@known_lease_files.delete(run&.fetch(:id, nil))) if run
           run && Domain.from_row(Run, run)
         end
       end

@@ -147,6 +147,26 @@ class CyborgRunLeaseTest < Minitest::Test
     assert_equal "run-2", @db[:run_leases].get(:run_id)
   end
 
+  def test_public_expiry_reclaims_file_from_fresh_manager_when_path_is_explicit
+    @manager.acquire(run_id: "run-1", lease_file: @lease_one)
+    manager = Cyborg::Runs::LeaseManager.new(
+      @db,
+      clock: Cyborg::FrozenClock.new(NOW + 61),
+      lease_timeout_seconds: 60,
+      lock_file: @lock_file
+    )
+
+    expired = manager.fail_expired_lease!(lease_file: @lease_one)
+
+    assert_equal "run-1", expired.id
+    assert_equal "failed", @db[:runs].where(id: "run-1").get(:status)
+    assert_empty @db[:run_leases].all
+    refute File.exist?(@lease_one)
+
+    manager.acquire(run_id: "run-2", lease_file: @lease_one)
+    assert_equal "run-2", @db[:run_leases].get(:run_id)
+  end
+
   def test_competing_database_connections_allow_only_one_active_lease
     db_one = Cyborg::Database.connect(path: @database_path)
     db_two = Cyborg::Database.connect(path: @database_path)
