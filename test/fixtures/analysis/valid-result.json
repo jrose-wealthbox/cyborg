@@ -25,7 +25,27 @@
     "input_tokens": 10,
     "output_tokens": 5,
     "cost_micros": 100,
-    "records": []
+    "records": [
+      {
+        "id": "usage-1",
+        "run_id": "run-1",
+        "task_id": "task-extract",
+        "reserved_cost_micros": 0,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cost_micros": 100,
+        "certainty": "provider_reported",
+        "created_at": "2026-08-13T12:00:00Z"
+      }
+    ]
   },
+  "task_results": [
+    {
+      "task_id": "task-extract",
+      "capability": "cheap_structured_extraction",
+      "dependency_ids": [],
+      "status": "succeeded"
+    }
+  ],
   "backend_metadata": {"backend": "fixture", "provider": "fixture"}
 }

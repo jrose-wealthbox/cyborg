@@ -19,18 +19,21 @@ module Cyborg
         confidence due_at people projects new_commitment rationale task_id capability dependency_ids
         source_url source_urls requested_operation requested_operations
       ].freeze
-      RESULT_FIELDS = %w[claims usage backend_metadata tasks].freeze
+      RESULT_FIELDS = %w[claims usage backend_metadata tasks task_results].freeze
       USAGE_FIELDS = %w[
-        run_id task_id session_id parent_session_id reserved_cost_micros input_tokens output_tokens
+        id run_id task_id session_id parent_session_id reserved_cost_micros input_tokens output_tokens
         cost_micros certainty created_at records warnings reported_cost_micros
         provider_reported_cost_micros locally_estimated_cost_micros unknown_cost_micros
       ].freeze
       TASK_RESULT_FIELDS = %w[id task_id capability dependency_ids status claims usage].freeze
+      TASK_STATUSES = %w[succeeded success failed skipped skipped_budget].freeze
       CERTAINTIES = %w[reserved provider_reported locally_estimated unknown].freeze
       DEFAULT_MAXIMUM_DETAILS_BYTES = 512
       MAXIMUM_TEXT_BYTES = 4_096
       MAXIMUM_LIST_LENGTH = 100
-      UNSET = Object.new.freeze
+      MAXIMUM_METADATA_KEYS = 128
+      MAXIMUM_METADATA_DEPTH = 8
+      SAFE_METADATA_KEY = /\A[a-zA-Z][a-zA-Z0-9_.-]{0,127}\z/
 
       Claim = Data.define(
         :action_kind, :summary, :canonical_subject_type, :canonical_subject_id,
@@ -100,12 +103,17 @@ module Cyborg
 
           evidence = evidence_index(packet)
           tasks = task_index(packet)
+          raw_task_results = if result.key?("task_results") && result.key?("tasks")
+            fail!("analysis.schema", "task_results")
+          else
+            result.fetch("task_results", result.fetch("tasks", []))
+          end
+          task_results = validate_task_results(raw_task_results, packet:, tasks:, evidence:)
           claims = raw_claims.map do |raw_claim|
-            validate_claim(raw_claim, packet:, evidence:, tasks:)
+            validate_claim(raw_claim, packet:, evidence:, tasks:, task_results:)
           end
           usage = validate_usage(result.fetch("usage", {}), packet:, tasks:)
-          validate_task_results(result.fetch("tasks", []), packet:, tasks:) if result.key?("tasks")
-          metadata = safe_metadata(result.fetch("backend_metadata", {}))
+          metadata = safe_metadata(result.fetch("backend_metadata", {}), maximum_bytes: limits.fetch(:maximum_output_bytes))
 
           AnalysisOutcome.new(claims: claims, usage:, backend_metadata: metadata)
         rescue ValidationFailure => error
@@ -160,13 +168,35 @@ module Cyborg
           id = task["id"]
           capability = task["capability"]
           dependencies = task.fetch("dependency_ids", [])
-          fail!("analysis.invalid_packet", "tasks") unless nonblank?(id) && CAPABILITIES.include?(capability.to_s)
+          required = task.fetch("required", false)
+          fail!("analysis.invalid_packet", "tasks") unless nonblank?(id) && CAPABILITIES.include?(capability.to_s) && [true, false].include?(required)
           fail!("analysis.invalid_packet", "dependency_ids") unless dependencies.is_a?(Array) && dependencies.all? { |item| nonblank?(item) }
-          index[id] = {capability: capability.to_s, dependency_ids: dependencies.map(&:to_s).uniq.sort}
+          fail!("analysis.invalid_packet", "tasks") if index.key?(id)
+          reservation = validate_task_reservation(task.fetch("reservation", nil))
+          maximum_output_bytes = task["maximum_output_bytes"]
+          if maximum_output_bytes && !positive_integer?(maximum_output_bytes)
+            fail!("analysis.invalid_packet", "maximum_output_bytes")
+          end
+          index[id] = {capability: capability.to_s, dependency_ids: dependencies.map(&:to_s).uniq.sort,
+                       required:, reservation:, maximum_output_bytes:}
         end
       end
 
-      def validate_claim(raw_claim, packet:, evidence:, tasks:)
+      def validate_task_reservation(reservation)
+        fail!("analysis.invalid_packet", "reservation") unless reservation.is_a?(Hash)
+        cost = reservation["cost_micros"] || reservation[:cost_micros]
+        fail!("analysis.invalid_packet", "reservation") unless cost.is_a?(Integer) && cost >= 0
+        rates = %w[input_tokens output_tokens input_micros_per_token output_micros_per_token].map do |key|
+          reservation[key] || reservation[key.to_sym]
+        end
+        present = rates.compact
+        unless present.empty? || (present.length == 4 && present.all? { |value| value.is_a?(Integer) && value >= 0 } && cost == rates[0] * rates[2] + rates[1] * rates[3])
+          fail!("analysis.invalid_packet", "reservation")
+        end
+        cost
+      end
+
+      def validate_claim(raw_claim, packet:, evidence:, tasks:, task_results:)
         claim = normalize_hash(raw_claim, "claim")
         unknown = claim.keys - CLAIM_FIELDS
         fail!("analysis.unknown_field", unknown.first) unless unknown.empty?
@@ -193,7 +223,7 @@ module Cyborg
         new_commitment = claim.fetch("new_commitment", false)
         fail!("analysis.schema", "new_commitment") unless [true, false].include?(new_commitment)
         rationale = bounded_text(claim["rationale"], "rationale", required: false)
-        source_url, source_urls = validate_links(claim, evidence)
+        source_url, source_urls = validate_links(claim, evidence, evidence_ids)
         if claim.key?("requested_operation") && !claim["requested_operation"].nil?
           fail!("analysis.source_write_forbidden", "requested_operation")
         end
@@ -201,21 +231,17 @@ module Cyborg
           fail!("analysis.source_write_forbidden", "requested_operations")
         end
 
-        task_id = claim["task_id"]
-        capability = claim["capability"]
-        dependency_ids = claim.fetch("dependency_ids", [])
-        if task_id
-          fail!("analysis.undeclared_task", "task_id") unless tasks.key?(task_id)
-          task = tasks.fetch(task_id)
-          fail!("analysis.capability_mismatch", "capability") unless capability.to_s == task.fetch(:capability)
-          fail!("analysis.dependency_mismatch", "dependency_ids") unless dependency_ids.is_a?(Array)
-          normalized_dependencies = dependency_ids.map(&:to_s).uniq.sort
-          fail!("analysis.dependency_mismatch", "dependency_ids") unless normalized_dependencies == task.fetch(:dependency_ids)
-          dependency_ids = normalized_dependencies
-        else
-          fail!("analysis.schema", "dependency_ids") unless dependency_ids.is_a?(Array)
-          dependency_ids = dependency_ids.map(&:to_s).uniq.sort
-        end
+        task_id = required_string(claim, "task_id")
+        capability = required_string(claim, "capability")
+        dependency_ids = required_array(claim, "dependency_ids")
+        fail!("analysis.undeclared_task", "task_id") unless tasks.key?(task_id)
+        fail!("analysis.claim_unassigned", "task_id") unless task_results.key?(task_id)
+        fail!("analysis.claim_unassigned", "task_id") unless task_results.fetch(task_id).fetch(:status) == "succeeded"
+        task = tasks.fetch(task_id)
+        fail!("analysis.capability_mismatch", "capability") unless capability == task.fetch(:capability)
+        normalized_dependencies = dependency_ids.map(&:to_s).uniq.sort
+        fail!("analysis.dependency_mismatch", "dependency_ids") unless normalized_dependencies == task.fetch(:dependency_ids)
+        dependency_ids = normalized_dependencies
 
         Claim.new(
           action_kind, summary, subject_type, subject_id,
@@ -226,7 +252,7 @@ module Cyborg
         ).tap { |value| deep_freeze(value) }
       end
 
-      def validate_links(claim, evidence)
+      def validate_links(claim, evidence, evidence_ids)
         urls = []
         urls << claim["source_url"] if claim.key?("source_url") && !claim["source_url"].nil?
         if claim.key?("source_urls")
@@ -234,30 +260,26 @@ module Cyborg
           urls.concat(claim["source_urls"])
         end
         urls.each do |url|
-          fail!("analysis.untrusted_url", "source_url") unless url.is_a?(String) && trusted_url?(url) && evidence.values.any? { |item| item[:source_url] == url }
+          fail!("analysis.untrusted_url", "source_url") unless url.is_a?(String) && trusted_url?(url) && evidence_ids.any? { |id| evidence.fetch(id).fetch(:source_url) == url }
         end
         [urls.first, urls.uniq]
       end
 
       def validate_usage(raw_usage, packet:, tasks:)
         usage = normalize_hash(raw_usage, "usage")
+        return {} if usage.empty?
+
         unknown = usage.keys - USAGE_FIELDS
         fail!("analysis.invalid_usage", unknown.first) unless unknown.empty?
+        fail!("analysis.invalid_usage", "certainty") unless usage.key?("certainty")
+        fail!("analysis.invalid_usage", "records") unless usage.key?("records")
         if usage.key?("run_id") && usage["run_id"] != packet["run_id"]
           fail!("analysis.invalid_usage", "run_id")
         end
         records = usage.fetch("records", [])
         fail!("analysis.invalid_usage", "records") unless records.is_a?(Array)
         normalized_records = records.map { |record| validate_usage_record(record, packet:, tasks:) }
-        %w[reserved_cost_micros input_tokens output_tokens cost_micros reported_cost_micros
-           provider_reported_cost_micros locally_estimated_cost_micros unknown_cost_micros].each do |field|
-          validate_nonnegative_integer(usage[field], field) if usage.key?(field)
-        end
-        certainty = usage["certainty"]
-        validate_usage_values(usage, certainty, "usage") if certainty
-        result = usage.dup
-        result["records"] = normalized_records
-        result["certainty"] = certainty.to_s if certainty
+        result = reconcile_usage(usage, normalized_records)
         result["created_at"] = usage_date(result["created_at"]) if result.key?("created_at")
         if result.key?("warnings")
           fail!("analysis.invalid_usage", "warnings") unless result["warnings"].is_a?(Array) && result["warnings"].length <= MAXIMUM_LIST_LENGTH && result["warnings"].all? { |warning| warning.is_a?(String) && warning.bytesize <= MAXIMUM_TEXT_BYTES }
@@ -269,9 +291,8 @@ module Cyborg
         value = normalize_hash(record, "usage record")
         unknown = value.keys - USAGE_FIELDS
         fail!("analysis.invalid_usage", unknown.first) unless unknown.empty?
-        if value.key?("run_id") && value["run_id"] != packet["run_id"]
-          fail!("analysis.invalid_usage", "run_id")
-        end
+        fail!("analysis.invalid_usage", "id") unless nonblank?(value["id"])
+        fail!("analysis.invalid_usage", "run_id") unless value["run_id"] == packet["run_id"]
         if value.key?("task_id") && value["task_id"] && !tasks.key?(value["task_id"])
           fail!("analysis.invalid_usage", "task_id")
         end
@@ -284,7 +305,7 @@ module Cyborg
       end
 
       def validate_usage_values(value, certainty, field)
-        fail!("analysis.invalid_usage", field) unless CERTAINTIES.include?(certainty.to_s)
+        fail!("analysis.invalid_usage", field) unless certainty.is_a?(String) && CERTAINTIES.include?(certainty)
         if %w[provider_reported locally_estimated].include?(certainty.to_s)
           %w[input_tokens output_tokens cost_micros].each do |key|
             fail!("analysis.invalid_usage", key) unless value[key].is_a?(Integer) && value[key] >= 0
@@ -295,18 +316,94 @@ module Cyborg
         end
       end
 
-      def validate_task_results(raw_tasks, packet:, tasks:)
-        fail!("analysis.invalid_result", "tasks") unless raw_tasks.is_a?(Array)
-        raw_tasks.each do |raw_task|
-          task = normalize_hash(raw_task, "task")
-          fail!("analysis.unknown_field", "task") unless (task.keys - TASK_RESULT_FIELDS).empty?
-          id = task["id"] || task["task_id"]
-          fail!("analysis.undeclared_task", "task_id") unless tasks.key?(id)
-          expected = tasks.fetch(id)
-          fail!("analysis.capability_mismatch", "capability") unless task["capability"].to_s == expected[:capability]
-          dependencies = task.fetch("dependency_ids", [])
-          fail!("analysis.dependency_mismatch", "dependency_ids") unless dependencies.is_a?(Array) && dependencies.map(&:to_s).uniq.sort == expected[:dependency_ids]
+      def reconcile_usage(usage, records)
+        sums = {
+          "reserved_cost_micros" => records.sum { |record| record.fetch("reserved_cost_micros", 0).to_i },
+          "input_tokens" => records.sum { |record| record.fetch("input_tokens", 0).to_i },
+          "output_tokens" => records.sum { |record| record.fetch("output_tokens", 0).to_i },
+          "cost_micros" => records.sum { |record| record.fetch("cost_micros", 0).to_i },
+          "provider_reported_cost_micros" => records.select { |record| record["certainty"] == "provider_reported" }.sum { |record| record.fetch("cost_micros", 0).to_i },
+          "locally_estimated_cost_micros" => records.select { |record| record["certainty"] == "locally_estimated" }.sum { |record| record.fetch("cost_micros", 0).to_i },
+          "unknown_cost_micros" => records.select { |record| record["certainty"] == "unknown" }.sum { |record| record.fetch("cost_micros", 0).to_i }
+        }
+        sums["reported_cost_micros"] = sums.fetch("provider_reported_cost_micros")
+        derived_certainty = if records.empty?
+          "unknown"
+        elsif records.all? { |record| record["certainty"] == "provider_reported" }
+          "provider_reported"
+        elsif records.all? { |record| record["certainty"] == "locally_estimated" }
+          "locally_estimated"
+        else
+          "unknown"
         end
+        fail!("analysis.usage_mismatch", "certainty") unless usage.fetch("certainty") == derived_certainty
+        sums.each do |field, derived|
+          if usage.key?(field)
+            validate_nonnegative_integer(usage[field], field)
+            fail!("analysis.usage_mismatch", field) unless usage[field] == derived
+          else
+            usage[field] = derived
+          end
+        end
+        usage["records"] = records
+        validate_usage_values(usage, usage.fetch("certainty"), "usage")
+        usage
+      end
+
+      def validate_task_results(raw_tasks, packet:, tasks:, evidence:)
+        fail!("analysis.invalid_result", "task_results") unless raw_tasks.is_a?(Array)
+        task_results = {}
+        raw_tasks.each do |raw_task|
+          task = normalize_hash(raw_task, "task_result")
+          fail!("analysis.unknown_field", "task_result") unless (task.keys - TASK_RESULT_FIELDS).empty?
+          id = task["task_id"] || task["id"]
+          if task.key?("id") && task.key?("task_id") && task["id"] != task["task_id"]
+            fail!("analysis.schema", "task_id")
+          end
+          fail!("analysis.undeclared_task", "task_id") unless tasks.key?(id)
+          fail!("analysis.duplicate_task_result", "task_id") if task_results.key?(id)
+          expected = tasks.fetch(id)
+          status = task["status"]
+          fail!("analysis.invalid_task_status", "status") unless status.is_a?(String) && TASK_STATUSES.include?(status)
+          status = "succeeded" if status == "success"
+          fail!("analysis.capability_mismatch", "capability") unless task["capability"] == expected[:capability]
+          dependencies = task.fetch("dependency_ids", nil)
+          fail!("analysis.dependency_mismatch", "dependency_ids") unless dependencies.is_a?(Array) && dependencies.map(&:to_s).uniq.sort == expected[:dependency_ids]
+          if expected[:required] && status != "succeeded"
+            fail!("analysis.invalid_task_status", "status")
+          end
+          task_results[id] = {status:, claims: task.fetch("claims", []), usage: task.fetch("usage", nil)}
+          task_bytes = canonical_bytes(task)
+          if expected[:maximum_output_bytes] && task_bytes > expected[:maximum_output_bytes]
+            fail!("analysis.output_too_large", "task_results")
+          end
+        end
+        required_ids = tasks.select { |_id, value| value[:required] }.keys
+        fail!("analysis.task_results_incomplete", "task_results") unless required_ids.all? { |id| task_results.key?(id) }
+
+        claim_count = 0
+        task_results.each do |id, task_result|
+          claims = task_result.fetch(:claims)
+          fail!("analysis.invalid_task_result", "claims") unless claims.is_a?(Array)
+          claim_count += claims.length
+          fail!("analysis.claim_limit", "claims") if claim_count > packet_limit(packet, "maximum_claim_count")
+          if task_result.fetch(:status) != "succeeded" && !claims.empty?
+            fail!("analysis.invalid_task_status", "claims")
+          end
+          claims.each do |claim|
+            claim_hash = normalize_hash(claim, "claim")
+            unknown_claim_fields = claim_hash.keys - CLAIM_FIELDS
+            fail!("analysis.unknown_field", unknown_claim_fields.first) unless unknown_claim_fields.empty?
+            fail!("analysis.claim_unassigned", "task_id") unless claim_hash["task_id"] == id
+            validate_claim(claim_hash, packet:, evidence:, tasks:, task_results:)
+          end
+          nested_usage = task_result.fetch(:usage)
+          validate_usage(nested_usage, packet:, tasks:) unless nested_usage.nil?
+          if task_result.fetch(:status) != "succeeded" && nested_usage && !normalize_hash(nested_usage, "usage").empty?
+            fail!("analysis.invalid_task_status", "usage")
+          end
+        end
+        task_results
       end
 
       def canonical_date_time(value)
@@ -376,22 +473,29 @@ module Cyborg
         end
       end
 
-      def safe_metadata(value)
+      def safe_metadata(value, maximum_bytes:)
         metadata = normalize_hash(value, "backend_metadata")
-        deep_safe_metadata(metadata)
+        counters = {keys: 0, depth: 0}
+        safe = deep_safe_metadata(metadata, depth: 0, counters:)
+        fail!("analysis.metadata_limit", "backend_metadata") if counters[:keys] > MAXIMUM_METADATA_KEYS || counters[:depth] > MAXIMUM_METADATA_DEPTH
+        fail!("analysis.metadata_limit", "backend_metadata") if canonical_bytes(safe) > maximum_bytes
+        safe
       end
 
-      def deep_safe_metadata(value)
+      def deep_safe_metadata(value, depth: 0, counters: {keys: 0, depth: 0})
         case value
         when Hash
+          counters[:depth] = [counters[:depth], depth + 1].max
           value.each_with_object({}) do |(key, item), result|
             key_name = key.to_s
             next if key_name.match?(Cyborg::Redactor::BODY_KEY) || key_name.match?(Cyborg::Redactor::SENSITIVE_KEY)
-            safe_key = key_name.byteslice(0, MAXIMUM_TEXT_BYTES)
-            result[@redactor.call(safe_key)] = deep_safe_metadata(item)
+            fail!("analysis.invalid_metadata", "backend_metadata") unless key_name.match?(SAFE_METADATA_KEY)
+            counters[:keys] += 1
+            result[@redactor.call(key_name)] = deep_safe_metadata(item, depth: depth + 1, counters:)
           end
         when Array
-          value.first(MAXIMUM_LIST_LENGTH).map { |item| deep_safe_metadata(item) }
+          counters[:depth] = [counters[:depth], depth + 1].max
+          value.first(MAXIMUM_LIST_LENGTH).map { |item| deep_safe_metadata(item, depth: depth + 1, counters:) }
         when String
           @redactor.call(value)[0, MAXIMUM_TEXT_BYTES]
         when NilClass, TrueClass, FalseClass, Integer, Float
@@ -425,6 +529,10 @@ module Cyborg
 
       def packet_value(hash, key, fallback)
         hash.key?(key) ? hash[key] : fallback
+      end
+
+      def packet_limit(packet, field)
+        packet_value(packet, field, packet.dig("limits", field))
       end
 
       def default_action_kinds

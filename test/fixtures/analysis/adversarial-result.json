@@ -15,5 +15,13 @@
     }
   ],
   "usage": {"certainty": "unknown", "records": []},
+  "task_results": [
+    {
+      "task_id": "task-extract",
+      "capability": "cheap_structured_extraction",
+      "dependency_ids": [],
+      "status": "succeeded"
+    }
+  ],
   "backend_metadata": {"backend": "fixture"}
 }
