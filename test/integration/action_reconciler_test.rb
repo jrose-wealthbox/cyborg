@@ -51,7 +51,24 @@ class CyborgActionReconcilerTest < Minitest::Test
     assert_equal action.id, current.id
     assert_equal "done", current.user_state
     assert_equal 1, current.occurrence_number
-    assert_equal "Later wording", current.summary
+    assert_equal "Review", current.summary
+    assert_equal NOW, current.last_seen_at
+    assert_equal 1, @db[:action_evidence].where(action_id: action.id).count
+    assert_equal "actions.ambiguous_terminal_evidence", result.warnings.fetch(0).fetch("code")
+  end
+
+  def test_terminal_occurrence_attaches_known_evidence_without_updating_inference
+    action = @reconciler.call(run: run_value("run-1", NOW), claims: [claim(evidence_ids: ["e1"]) ]).actions.fetch(0)
+    @state_machine.transition(action_id: action.id, command: "dismiss", origin: "cli")
+
+    result = @reconciler.call(run: run_value("run-1", LATER), claims: [claim(summary: "Changed", evidence_ids: ["e1"])])
+    current = result.actions.fetch(0)
+
+    assert_equal "dismissed", current.user_state
+    assert_equal "Review", current.summary
+    assert_equal NOW, current.last_seen_at
+    assert_empty result.warnings
+    assert_equal 1, @db[:action_evidence].where(action_id: action.id).count
   end
 
   def test_new_commitment_with_later_unknown_anchor_creates_successor_and_supersedes_predecessor
@@ -105,6 +122,40 @@ class CyborgActionReconcilerTest < Minitest::Test
 
     assert_equal first.id, result.actions.fetch(0).id
     assert_equal 1, @db[:action_series].count
+  end
+
+  def test_prior_subject_key_migrates_known_series_and_registers_permanent_alias
+    first = @reconciler.call(run: run_value("run-1", NOW), claims: [claim(evidence_ids: ["e1"]) ]).actions.fetch(0)
+    series = Cyborg::Repositories::ActionRepository.new(@db).series(first.series_id)
+    new_claim = claim(evidence_ids: ["e1"]).merge(
+      "canonical_subject_id" => "node-43", "prior_subject_key" => series.current_subject_key
+    )
+
+    result = @reconciler.call(run: run_value("run-1", LATER), claims: [new_claim])
+    migrated = Cyborg::Repositories::ActionRepository.new(@db).series(series.id)
+
+    assert_equal first.id, result.actions.fetch(0).id
+    refute_equal series.current_subject_key, migrated.current_subject_key
+    assert_equal series.id, @db[:action_key_aliases].where(subject_key: series.current_subject_key).get(:series_id)
+    assert_equal first.series_id, @db[:action_series].where(current_subject_key: migrated.current_subject_key).get(:id)
+  end
+
+  def test_prior_subject_key_collision_rolls_back_without_reassignment
+    first = @reconciler.call(run: run_value("run-1", NOW), claims: [claim(evidence_ids: ["e1"]) ]).actions.fetch(0)
+    second_claim = claim(evidence_ids: ["e1"]).merge("canonical_subject_id" => "node-43")
+    second = @reconciler.call(run: run_value("run-1", LATER), claims: [second_claim]).actions.fetch(0)
+    first_series = Cyborg::Repositories::ActionRepository.new(@db).series(first.series_id)
+    second_series = Cyborg::Repositories::ActionRepository.new(@db).series(second.series_id)
+
+    error = assert_raises(Cyborg::PersistenceError) do
+      @reconciler.call(
+        run: run_value("run-1", AFTER),
+        claims: [second_claim.merge("prior_subject_key" => first_series.current_subject_key)]
+      )
+    end
+    assert_equal "actions.alias_conflict", error.code
+    assert_nil @db[:action_key_aliases].where(subject_key: first_series.current_subject_key).first
+    assert_equal second_series.current_subject_key, Cyborg::Repositories::ActionRepository.new(@db).series(second.series_id).current_subject_key
   end
 
   private

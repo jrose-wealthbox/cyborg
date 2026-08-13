@@ -17,7 +17,8 @@ module Cyborg
         action_kind summary subject_type subject_id canonical_subject_type canonical_subject_id
         owner_identity thread_or_target_identity target_identity anchor_evidence_id evidence_ids
         confidence due_at people projects new_commitment rationale task_id capability dependency_ids
-        source_url source_urls requested_operation requested_operations
+        source_url source_urls requested_operation requested_operations prior_subject_key
+        previous_subject_key legacy_subject_key
       ].freeze
       RESULT_FIELDS = %w[claims usage backend_metadata tasks task_results].freeze
       USAGE_FIELDS = %w[
@@ -39,7 +40,7 @@ module Cyborg
         :action_kind, :summary, :canonical_subject_type, :canonical_subject_id,
         :owner_identity, :thread_or_target_identity, :anchor_evidence_id, :evidence_ids,
         :confidence, :due_at, :people, :projects, :new_commitment, :rationale,
-        :task_id, :capability, :dependency_ids, :source_url, :source_urls
+        :task_id, :capability, :dependency_ids, :source_url, :source_urls, :prior_subject_key
       ) do
         alias subject_type canonical_subject_type
         alias subject_id canonical_subject_id
@@ -60,7 +61,7 @@ module Cyborg
             hash["due_at"], Array(hash["people"]), Array(hash["projects"]),
             hash.fetch("new_commitment", false), hash["rationale"], hash["task_id"],
             hash["capability"], Array(hash["dependency_ids"]), hash["source_url"],
-            Array(hash["source_urls"])
+            Array(hash["source_urls"]), hash["prior_subject_key"] || hash["previous_subject_key"] || hash["legacy_subject_key"]
           )
         end
       end
@@ -223,6 +224,7 @@ module Cyborg
         new_commitment = claim.fetch("new_commitment", false)
         fail!("analysis.schema", "new_commitment") unless [true, false].include?(new_commitment)
         rationale = bounded_text(claim["rationale"], "rationale", required: false)
+        prior_subject_key = prior_subject_key_value(claim)
         source_url, source_urls = validate_links(claim, evidence, evidence_ids)
         if claim.key?("requested_operation") && !claim["requested_operation"].nil?
           fail!("analysis.source_write_forbidden", "requested_operation")
@@ -248,7 +250,7 @@ module Cyborg
           optional_string(claim["owner_identity"]),
           optional_string(claim["thread_or_target_identity"] || claim["target_identity"]),
           anchor, evidence_ids, confidence, due_at, people || [], projects || [], new_commitment,
-          rationale, task_id, capability, dependency_ids, source_url, source_urls
+          rationale, task_id, capability, dependency_ids, source_url, source_urls, prior_subject_key
         ).tap { |value| deep_freeze(value) }
       end
 
@@ -455,6 +457,16 @@ module Cyborg
         return nil if value.nil?
 
         fail!("analysis.schema") unless value.is_a?(String) && value.bytesize <= MAXIMUM_TEXT_BYTES
+        value
+      end
+
+      def prior_subject_key_value(claim)
+        values = %w[prior_subject_key previous_subject_key legacy_subject_key].filter_map { |key| claim[key] }
+        fail!("analysis.schema", "prior_subject_key") if values.uniq.length > 1
+        value = values.first
+        return nil if value.nil?
+
+        fail!("analysis.schema", "prior_subject_key") unless value.is_a?(String) && !value.strip.empty? && value.bytesize <= MAXIMUM_TEXT_BYTES
         value
       end
 

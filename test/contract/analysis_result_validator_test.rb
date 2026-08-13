@@ -28,6 +28,16 @@ class CyborgAnalysisResultValidatorTest < Minitest::Test
     refute outcome.backend_metadata.key?("prompt_body")
   end
 
+  def test_preserves_explicit_prior_subject_key_for_identity_migration
+    result = @valid_result.merge(
+      "claims" => [valid_claim.merge("previous_subject_key" => "legacy-subject-key")]
+    )
+
+    outcome = @validator.validate(packet: @packet, result: result)
+
+    assert_equal "legacy-subject-key", outcome.claims.first.prior_subject_key
+  end
+
   def test_one_unknown_evidence_id_rejects_every_claim
     result = @valid_result.merge(
       "claims" => [valid_claim, valid_claim.merge("evidence_ids" => ["missing"])]

@@ -51,6 +51,25 @@ module Cyborg
           owner_identity: owner, target_identity: target
         )
         series = @actions.find_series_by_subject(key)
+        prior_key = claim_value(claim, "prior_subject_key").to_s if nonblank?(claim_value(claim, "prior_subject_key"))
+        if series && prior_key
+          prior_series = @actions.find_series_by_subject(prior_key)
+          fail_alias_conflict if prior_series && prior_series.id != series.id
+        end
+        if series.nil? && prior_key
+          prior_series = @actions.find_series_by_subject(prior_key)
+          if prior_series
+            @actions.update_series(
+              id: prior_series.id,
+              attributes: {current_subject_key: key, identity_version:, updated_at: observed_at}
+            )
+            @actions.add_alias(
+              subject_key: prior_key, series_id: prior_series.id,
+              identity_version: prior_series.identity_version, created_at: observed_at
+            )
+            series = @actions.series(prior_series.id)
+          end
+        end
         if series.nil?
           return [create_initial_action(
             run_id:, observed_at:, key:, identity_version:, action_kind:, subject_type:, subject_id:,
@@ -62,17 +81,29 @@ module Cyborg
         fail_action("actions.series_without_occurrence") unless current
         evidence_ids = claim_evidence_ids(claim)
         evidence = evidence_rows(evidence_ids)
-        if terminal?(current) && claim_value(claim, "new_commitment") == true
-          if successor_allowed?(current, claim, evidence)
-            return create_successor(
-              run_id:, observed_at:, series:, predecessor: current, key:, identity_version:,
-              action_kind:, subject_type:, subject_id:, owner:, target:, claim:, evidence_ids:
-            )
+        if terminal?(current)
+          if claim_value(claim, "new_commitment") == true
+            if successor_allowed?(current, claim, evidence)
+              return create_successor(
+                run_id:, observed_at:, series:, predecessor: current, key:, identity_version:,
+                action_kind:, subject_type:, subject_id:, owner:, target:, claim:, evidence_ids:
+              )
+            end
+            warnings << {
+              "code" => "actions.ambiguous_successor", "action_id" => current.id,
+              "claim_index" => index, "reason" => "successor conditions are not provable"
+            }
           end
-          warnings << {
-            "code" => "actions.ambiguous_successor", "action_id" => current.id,
-            "claim_index" => index, "reason" => "successor conditions are not provable"
-          }
+
+          attachable, unknown = terminal_evidence(current, evidence_ids, evidence)
+          attach_evidence(action_id: current.id, evidence_ids: attachable, run_id:, observed_at:)
+          if unknown.any?
+            warnings << {
+              "code" => "actions.ambiguous_terminal_evidence", "action_id" => current.id,
+              "claim_index" => index, "reason" => "evidence was not known before terminal transition"
+            }
+          end
+          return [@actions.action(current.id)]
         end
 
         update_inference(current, claim, observed_at:)
@@ -93,6 +124,19 @@ module Cyborg
         )
         attach_evidence(action_id: action.id, evidence_ids: claim_evidence_ids(claim), run_id:, observed_at:)
         @actions.action(action.id)
+      end
+
+      def terminal_evidence(action, evidence_ids, evidence)
+        evidence_by_id = evidence.to_h { |row| [row.fetch(:id), row] }
+        evidence_ids.partition do |evidence_id|
+          row = evidence_by_id[evidence_id]
+          next false unless row
+          next true if row[:evidence_at] && row[:evidence_at] <= action.terminal_at
+
+          @db[:action_evidence].where(action_id: action.id, evidence_id:).where do
+            first_seen_at <= action.terminal_at
+          end.count.positive?
+        end
       end
 
       def create_successor(run_id:, observed_at:, series:, predecessor:, key:, identity_version:, action_kind:, subject_type:, subject_id:, owner:, target:, claim:, evidence_ids:)
@@ -200,6 +244,10 @@ module Cyborg
         end
       end
 
+      def nonblank?(value)
+        value.is_a?(String) && !value.strip.empty?
+      end
+
       def run_value(run, field)
         if run.respond_to?(field)
           run.public_send(field)
@@ -224,6 +272,10 @@ module Cyborg
 
       def fail_action(code)
         raise Cyborg::UsageError.new(code)
+      end
+
+      def fail_alias_conflict
+        raise Cyborg::PersistenceError.new("actions.alias_conflict")
       end
     end
   end

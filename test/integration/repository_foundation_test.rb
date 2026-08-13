@@ -125,6 +125,39 @@ class CyborgRepositoryFoundationTest < Minitest::Test
     end
   end
 
+  def test_action_alias_cannot_collide_with_another_series_current_key
+    insert_action_fixture
+    @db[:action_series].insert(
+      id: "series-2", current_subject_key: "current-2", identity_version: 1,
+      action_kind: "review", canonical_subject_type: "github_pr", canonical_subject_id: "43",
+      created_at: NOW, updated_at: NOW
+    )
+
+    error = assert_raises(Cyborg::PersistenceError) do
+      @actions.add_alias(subject_key: "current-2", series_id: "series-1", identity_version: 1, created_at: NOW)
+    end
+    assert_equal "actions.alias_conflict", error.code
+  end
+
+  def test_series_create_and_update_reject_existing_alias_key
+    insert_action_fixture
+    @actions.add_alias(subject_key: "legacy-key", series_id: "series-1", identity_version: 1, created_at: NOW)
+
+    create_error = assert_raises(Cyborg::PersistenceError) do
+      @actions.create_series(
+        id: "series-2", current_subject_key: "legacy-key", identity_version: 1,
+        action_kind: "review", canonical_subject_type: "github_pr", canonical_subject_id: "43",
+        created_at: NOW, updated_at: NOW
+      )
+    end
+    assert_equal "actions.alias_conflict", create_error.code
+
+    update_error = assert_raises(Cyborg::PersistenceError) do
+      @actions.update_series(id: "series-1", attributes: {current_subject_key: "legacy-key", updated_at: NOW})
+    end
+    assert_equal "actions.alias_conflict", update_error.code
+  end
+
   def test_action_evidence_rejects_noncanonical_first_seen_at
     insert_action_fixture
     assert_raises(Cyborg::PersistenceError) do
