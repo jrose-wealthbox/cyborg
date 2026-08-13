@@ -50,6 +50,8 @@ module Cyborg
           identity_version:, action_kind:, subject_type:, subject_id:,
           owner_identity: owner, target_identity: target
         )
+        evidence_ids = claim_evidence_ids(claim)
+        evidence = evidence_rows(evidence_ids)
         series = @actions.find_series_by_subject(key)
         prior_key = claim_value(claim, "prior_subject_key").to_s if nonblank?(claim_value(claim, "prior_subject_key"))
         if series && prior_key
@@ -61,12 +63,21 @@ module Cyborg
           if prior_series
             @actions.update_series(
               id: prior_series.id,
-              attributes: {current_subject_key: key, identity_version:, updated_at: observed_at}
+              attributes: {
+                current_subject_key: key, identity_version:, action_kind:,
+                canonical_subject_type: SubjectKey.normalize(subject_type),
+                canonical_subject_id: SubjectKey.normalize(subject_id),
+                normalized_owner_identity: SubjectKey.normalize(owner),
+                normalized_thread_or_target_identity: SubjectKey.normalize(target),
+                updated_at: observed_at
+              }
             )
-            @actions.add_alias(
-              subject_key: prior_key, series_id: prior_series.id,
-              identity_version: prior_series.identity_version, created_at: observed_at
-            )
+            unless @actions.alias_for_subject(prior_key)&.fetch(:series_id, nil) == prior_series.id
+              @actions.add_alias(
+                subject_key: prior_key, series_id: prior_series.id,
+                identity_version: prior_series.identity_version, created_at: observed_at
+              )
+            end
             series = @actions.series(prior_series.id)
           end
         end
@@ -79,8 +90,6 @@ module Cyborg
 
         current = @actions.actions_for_series(series.id).last
         fail_action("actions.series_without_occurrence") unless current
-        evidence_ids = claim_evidence_ids(claim)
-        evidence = evidence_rows(evidence_ids)
         if terminal?(current)
           if claim_value(claim, "new_commitment") == true
             if successor_allowed?(current, claim, evidence)
@@ -202,7 +211,9 @@ module Cyborg
       end
 
       def evidence_rows(ids)
-        @db[:evidence].where(id: ids).all.map { |row| {id: row.fetch(:id), evidence_at: row.fetch(:evidence_at)} }
+        rows = @db[:evidence].where(id: ids).all
+        fail_action("actions.unknown_evidence") unless rows.length == ids.uniq.length
+        rows.map { |row| {id: row.fetch(:id), evidence_at: row.fetch(:evidence_at)} }
       end
 
       def claim_evidence_ids(claim)

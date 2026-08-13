@@ -25,6 +25,10 @@ module Cyborg
         record && value(ActionSeries, record)
       end
 
+      def alias_for_subject(subject_key)
+        db[:action_key_aliases].where(subject_key:).first
+      end
+
       def add_alias(attributes)
         attrs = attributes.to_h
         validate_timestamps!(attrs, %i[created_at])
@@ -32,7 +36,7 @@ module Cyborg
         raise Cyborg::PersistenceError.new("actions.alias_conflict") if current
         existing = db[:action_key_aliases].where(subject_key: attrs.fetch(:subject_key)).first
         if existing
-          return true if existing.fetch(:series_id) == attrs.fetch(:series_id) && existing.fetch(:identity_version) == attrs.fetch(:identity_version)
+          return true if existing.fetch(:series_id) == attrs.fetch(:series_id)
 
           raise Cyborg::PersistenceError.new("actions.alias_conflict")
         end

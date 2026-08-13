@@ -71,6 +71,20 @@ class CyborgActionReconcilerTest < Minitest::Test
     assert_equal 1, @db[:action_evidence].where(action_id: action.id).count
   end
 
+  def test_unknown_evidence_is_rejected_before_terminal_filtering
+    action = @reconciler.call(run: run_value("run-1", NOW), claims: [claim(evidence_ids: ["e1"]) ]).actions.fetch(0)
+    @state_machine.transition(action_id: action.id, command: "done", origin: "cli")
+
+    error = assert_raises(Cyborg::UsageError) do
+      @reconciler.call(run: run_value("run-1", AFTER), claims: [claim(summary: "Injected", evidence_ids: ["missing"])])
+    end
+    assert_equal "actions.unknown_evidence", error.code
+    current = Cyborg::Repositories::ActionRepository.new(@db).action(action.id)
+    assert_equal "Review", current.summary
+    assert_equal NOW, current.last_seen_at
+    assert_equal 1, @db[:action_evidence].where(action_id: action.id).count
+  end
+
   def test_new_commitment_with_later_unknown_anchor_creates_successor_and_supersedes_predecessor
     predecessor = @reconciler.call(run: run_value("run-1", NOW), claims: [claim(evidence_ids: ["e1"]) ]).actions.fetch(0)
     @state_machine.transition(action_id: predecessor.id, command: "done", origin: "cli")
@@ -140,6 +154,40 @@ class CyborgActionReconcilerTest < Minitest::Test
     assert_equal first.series_id, @db[:action_series].where(current_subject_key: migrated.current_subject_key).get(:id)
   end
 
+  def test_prior_alias_is_reused_with_original_version_across_multiple_identity_migrations
+    first = @reconciler.call(run: run_value("run-1", NOW), claims: [claim(evidence_ids: ["e1"]) ]).actions.fetch(0)
+    initial = Cyborg::Repositories::ActionRepository.new(@db).series(first.series_id)
+    old_key = initial.current_subject_key
+
+    @reconciler.call(
+      run: run_value("run-1", LATER),
+      claims: [claim(action_kind: "respond", subject_type: "github_issue", subject_id: "issue-43", owner_identity: "owner-2", target_identity: "repo/issues/43").merge(
+        "identity_version" => 2, "prior_subject_key" => old_key
+      )]
+    )
+    after_first = Cyborg::Repositories::ActionRepository.new(@db).series(first.series_id)
+
+    result = @reconciler.call(
+      run: run_value("run-1", AFTER),
+      claims: [claim(action_kind: "investigate", subject_type: "github_issue", subject_id: "issue-44", owner_identity: "owner-3", target_identity: "repo/issues/44").merge(
+        "identity_version" => 3, "prior_subject_key" => old_key
+      )]
+    )
+    final = Cyborg::Repositories::ActionRepository.new(@db).series(first.series_id)
+    alias_row = @db[:action_key_aliases].where(subject_key: old_key).first
+
+    assert_equal first.id, result.actions.fetch(0).id
+    assert_equal 1, @db[:action_key_aliases].where(subject_key: old_key).count
+    assert_equal 1, alias_row.fetch(:identity_version)
+    assert_equal after_first.id, final.id
+    assert_equal 3, final.identity_version
+    assert_equal "investigate", final.action_kind
+    assert_equal "github_issue", final.canonical_subject_type
+    assert_equal "issue-44", final.canonical_subject_id
+    assert_equal "owner-3", final.normalized_owner_identity
+    assert_equal "repo/issues/44", final.normalized_thread_or_target_identity
+  end
+
   def test_prior_subject_key_collision_rolls_back_without_reassignment
     first = @reconciler.call(run: run_value("run-1", NOW), claims: [claim(evidence_ids: ["e1"]) ]).actions.fetch(0)
     second_claim = claim(evidence_ids: ["e1"]).merge("canonical_subject_id" => "node-43")
@@ -188,11 +236,13 @@ class CyborgActionReconcilerTest < Minitest::Test
     )
   end
 
-  def claim(summary: "Review", evidence_ids: ["e1"], new_commitment: false)
+  def claim(summary: "Review", evidence_ids: ["e1"], new_commitment: false,
+            action_kind: "review", subject_type: "github_pull_request", subject_id: "node-42",
+            owner_identity: "me@example.com", target_identity: "acme/cyborg#42")
     {
-      "action_kind" => "review", "summary" => summary,
-      "canonical_subject_type" => "github_pull_request", "canonical_subject_id" => "node-42",
-      "owner_identity" => "me@example.com", "thread_or_target_identity" => "acme/cyborg#42",
+      "action_kind" => action_kind, "summary" => summary,
+      "canonical_subject_type" => subject_type, "canonical_subject_id" => subject_id,
+      "owner_identity" => owner_identity, "thread_or_target_identity" => target_identity,
       "anchor_evidence_id" => evidence_ids.first, "evidence_ids" => evidence_ids, "confidence" => 0.9,
       "people" => [], "projects" => [], "new_commitment" => new_commitment
     }
