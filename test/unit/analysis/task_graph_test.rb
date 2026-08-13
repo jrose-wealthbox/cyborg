@@ -42,6 +42,21 @@ class CyborgAnalysisTaskGraphTest < Minitest::Test
     assert_raises(ArgumentError) { task(packet_fingerprint: "") }
   end
 
+  def test_reservation_derives_and_validates_integer_micro_cost
+    derived = Cyborg::Analysis::Reservation.new(
+      input_tokens: 10, output_tokens: 4,
+      input_micros_per_token: 100, output_micros_per_token: 200
+    )
+    assert_equal 1_800, derived.cost_micros
+
+    assert_raises(ArgumentError) do
+      Cyborg::Analysis::Reservation.new(
+        cost_micros: 1, input_tokens: 10, output_tokens: 4,
+        input_micros_per_token: 100, output_micros_per_token: 200
+      )
+    end
+  end
+
   private
 
   def task(id: "task", capability: "medium_reasoning", dependency_ids: [], required: true,

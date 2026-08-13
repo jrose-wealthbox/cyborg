@@ -50,6 +50,67 @@ class CyborgUsageRecorderTest < Minitest::Test
     assert_equal "unknown", summary.certainty
   end
 
+  def test_releases_reservation_when_provider_usage_becomes_known
+    row = @recorder.record(
+      run_id: "run-1", task_id: "extract", session_id: "extract-session",
+      reserved_cost_micros: 4_000, certainty: "reserved"
+    )
+
+    updated = @recorder.update(
+      session_id: row.session_id, input_tokens: 10, output_tokens: 4,
+      cost_micros: 1_500, certainty: "provider_reported"
+    )
+
+    assert_equal 0, updated.reserved_cost_micros
+    summary = @recorder.summary(run_id: "run-1")
+    assert_equal 0, summary.reserved_cost_micros
+    assert_equal 1_500, summary.provider_reported_cost_micros
+    assert_equal 0, summary.locally_estimated_cost_micros
+    assert_equal 0, summary.unknown_cost_micros
+  end
+
+  def test_separates_estimated_and_unknown_costs
+    @recorder.record(
+      run_id: "run-1", session_id: "provider", cost_micros: 1_500,
+      certainty: "provider_reported"
+    )
+    @recorder.record(
+      run_id: "run-1", session_id: "estimated", cost_micros: 700,
+      certainty: "locally_estimated"
+    )
+    @recorder.record(
+      run_id: "run-1", session_id: "unknown", cost_micros: 300,
+      certainty: "unknown"
+    )
+
+    summary = @recorder.summary(run_id: "run-1")
+
+    assert_equal 1_500, summary.provider_reported_cost_micros
+    assert_equal 700, summary.locally_estimated_cost_micros
+    assert_equal 300, summary.unknown_cost_micros
+    assert_equal 1_500, summary.reported_cost_micros
+    assert_equal "unknown", summary.certainty
+  end
+
+  def test_rejects_provider_reported_usage_without_known_cost
+    assert_raises(ArgumentError) do
+      @recorder.record(run_id: "run-1", session_id: "provider", certainty: "provider_reported")
+    end
+  end
+
+  def test_rejects_parent_session_from_another_run
+    @db[:runs].insert(
+      id: "run-2", profile: "default", execution_mode: "interactive", status: "running",
+      window_start_utc: "2026-08-12T00:00:00Z", window_end_utc: "2026-08-13T00:00:00Z",
+      display_timezone: "UTC", configuration_fingerprint: "config", created_at: "2026-08-12T00:00:00Z"
+    )
+    parent = @recorder.record(run_id: "run-1", session_id: "parent")
+
+    assert_raises(ArgumentError) do
+      @recorder.record(run_id: "run-2", session_id: "child", parent_session_id: parent.id)
+    end
+  end
+
   def test_rejects_invalid_certainty_and_negative_usage
     assert_raises(ArgumentError) do
       @recorder.record(run_id: "run-1", session_id: "x", certainty: "guess")

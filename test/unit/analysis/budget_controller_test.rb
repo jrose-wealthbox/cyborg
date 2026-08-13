@@ -42,7 +42,8 @@ class CyborgAnalysisBudgetControllerTest < Minitest::Test
   def test_stale_price_catalog_is_a_warning
     catalog = Cyborg::Analysis::PriceCatalog.new(
       provider: "fixture", model: "fixture-model", input_micros_per_token: 1,
-      output_micros_per_token: 2, last_verified_at: Time.utc(2026, 8, 1)
+      output_micros_per_token: 2, effective_date: "2026-08-01",
+      verified_at: Time.utc(2026, 8, 1)
     )
     controller = Cyborg::Analysis::BudgetController.new(
       price_catalog: catalog, now: Time.utc(2026, 8, 13)
@@ -51,6 +52,18 @@ class CyborgAnalysisBudgetControllerTest < Minitest::Test
     plan = controller.reserve(tasks: [task], ceiling_micros: 5_000_000)
 
     assert_includes plan.warnings, "analysis.stale_price_catalog"
+  end
+
+  def test_price_catalog_retains_effective_date_and_verified_at
+    catalog = Cyborg::Analysis::PriceCatalog.new(
+      provider: "fixture", model: "fixture-model", input_micros_per_token: 1,
+      output_micros_per_token: 2, effective_date: "2026-08-01",
+      verified_at: Time.utc(2026, 8, 1)
+    )
+
+    assert_equal "2026-08-01", catalog.effective_date
+    assert_equal Time.utc(2026, 8, 1), catalog.verified_at
+    assert_equal catalog.verified_at, catalog.last_verified_at
   end
 
   def test_allow_launch_rejects_unreserved_or_changed_tasks

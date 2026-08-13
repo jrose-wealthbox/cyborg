@@ -20,8 +20,10 @@ module Cyborg
       def record(run_id:, task_id: nil, session_id: nil, parent_session_id: nil,
                  reservation: nil, reserved_cost_micros: nil, input_tokens: nil,
                  output_tokens: nil, cost_micros: nil, certainty: nil, id: nil, created_at: nil)
+        validate_parent_session!(run_id:, parent_session_id:, current_id: id)
         reserved = reservation_cost(reservation, reserved_cost_micros)
         certainty ||= cost_micros.nil? ? "reserved" : "provider_reported"
+        reserved = 0 unless cost_micros.nil?
         record_value = UsageRecord.new(
           id: id || SecureRandom.uuid, run_id:, task_id:, session_id:, parent_session_id:,
           reserved_cost_micros: reserved, input_tokens:, output_tokens:, cost_micros:,
@@ -40,6 +42,8 @@ module Cyborg
         allowed = %i[reserved_cost_micros input_tokens output_tokens cost_micros certainty task_id parent_session_id]
         changes = attributes.select { |key, _value| allowed.include?(key.to_sym) }
         values = row.merge(changes.transform_keys(&:to_sym))
+        validate_parent_session!(run_id: values.fetch(:run_id), parent_session_id: values[:parent_session_id], current_id: values.fetch(:id))
+        values[:reserved_cost_micros] = 0 unless values[:cost_micros].nil?
         validated = UsageRecord.new(**value_attributes(values))
         db[:usage_records].where(id: row.fetch(:id)).update(row_for(validated))
         find(row.fetch(:id))
@@ -80,11 +84,15 @@ module Cyborg
       def summary(run_id:)
         records = db[:usage_records].where(run_id:).order(:id).all.map { |row| UsageRecord.new(**value_attributes(row)) }
         reserved = records.sum(&:reserved_cost_micros)
-        reported = records.select(&:reported?).sum { |record| record.cost_micros.to_i }
+        provider_reported = records.select { |record| record.certainty == "provider_reported" }.sum { |record| record.cost_micros.to_i }
+        locally_estimated = records.select { |record| record.certainty == "locally_estimated" }.sum { |record| record.cost_micros.to_i }
+        unknown = records.select { |record| record.certainty == "unknown" }.sum { |record| record.cost_micros.to_i }
         certainty = certainty_for(records)
         warnings = certainty == "unknown" ? ["analysis.cost_uncertain"] : []
         UsageSummary.new(
-          records:, reserved_cost_micros: reserved, reported_cost_micros: reported,
+          records:, reserved_cost_micros: reserved, reported_cost_micros: provider_reported,
+          provider_reported_cost_micros: provider_reported,
+          locally_estimated_cost_micros: locally_estimated, unknown_cost_micros: unknown,
           certainty:, warnings:
         )
       end
@@ -96,6 +104,9 @@ module Cyborg
             "records" => summary.records.map { |record| usage_hash(record) },
             "reserved_cost_micros" => summary.reserved_cost_micros,
             "reported_cost_micros" => summary.reported_cost_micros,
+            "provider_reported_cost_micros" => summary.provider_reported_cost_micros,
+            "locally_estimated_cost_micros" => summary.locally_estimated_cost_micros,
+            "unknown_cost_micros" => summary.unknown_cost_micros,
             "certainty" => summary.certainty,
             "warnings" => summary.warnings
           }, backend_metadata:
@@ -110,6 +121,35 @@ module Cyborg
 
         value = reservation.respond_to?(:cost_micros) ? reservation.cost_micros : reservation.to_h.fetch(:cost_micros) { reservation.to_h.fetch("cost_micros") }
         Contracts.strict_integer(value, "reserved_cost_micros")
+      end
+
+      def validate_parent_session!(run_id:, parent_session_id:, current_id: nil)
+        return if parent_session_id.nil?
+
+        if current_id && parent_session_id.to_s == current_id.to_s
+          raise ArgumentError, "usage session cannot parent itself"
+        end
+
+        parent = db[:usage_records].where(id: parent_session_id).first
+        raise ArgumentError, "parent usage session not found" unless parent
+        unless parent.fetch(:run_id).to_s == run_id.to_s
+          raise ArgumentError, "parent usage session must belong to the same run"
+        end
+
+        return unless current_id
+
+        seen = {}
+        while parent
+          parent_id = parent.fetch(:id).to_s
+          raise ArgumentError, "usage session hierarchy contains a cycle" if seen[parent_id]
+
+          seen[parent_id] = true
+          ancestor_id = parent[:parent_session_id]
+          break if ancestor_id.nil?
+          raise ArgumentError, "usage session hierarchy contains a cycle" if ancestor_id.to_s == current_id.to_s
+
+          parent = db[:usage_records].where(id: ancestor_id).first
+        end
       end
 
       def row_for(record)

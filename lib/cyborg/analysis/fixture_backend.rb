@@ -21,11 +21,11 @@ module Cyborg
 
       def analyze(packet:, task:, reservation:)
         raise ArgumentError, "task must be an AnalysisTask" unless task.is_a?(AnalysisTask)
-        unless reservation.nil? || reservation.is_a?(Reservation) || reservation.respond_to?(:to_h)
-          raise ArgumentError, "reservation must be a Reservation"
+        unless reservation.is_a?(Reservation) && reservation == task.reservation
+          raise ArgumentError, "reservation must match the task reservation"
         end
 
-        bytes = File.binread(path)
+        bytes = File.open(path, "rb") { |file| file.read(maximum_bytes + 1) }
         if bytes.bytesize > maximum_bytes
           raise Cyborg::UsageError.new("analysis.output_too_large", "fixture result exceeds backend byte bound")
         end

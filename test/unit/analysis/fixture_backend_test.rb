@@ -7,12 +7,28 @@ class CyborgAnalysisFixtureBackendTest < Minitest::Test
     backend = Cyborg::Analysis::FixtureBackend.new(
       path: File.expand_path("../../fixtures/bridge/analysis-result-valid.json", __dir__)
     )
-    outcome = backend.analyze(packet: {"run_id" => "018f5f62-3ef4-7d31-9e6d-8f6dfeddb847"}, task: task, reservation: reservation)
+    outcome = backend.analyze(packet: {"run_id" => "018f5f62-3ef4-7d31-9e6d-8f6dfeddb847"}, task: task, reservation: task.reservation)
 
     assert_equal [], outcome.claims
     assert_equal "fixture", outcome.backend_metadata.fetch("backend")
     assert_predicate outcome, :frozen?
     assert_predicate outcome.backend_metadata, :frozen?
+  end
+
+  def test_requires_the_task_reservation
+    backend = Cyborg::Analysis::FixtureBackend.new(
+      path: File.expand_path("../../fixtures/bridge/analysis-result-valid.json", __dir__)
+    )
+
+    assert_raises(ArgumentError) do
+      backend.analyze(packet: {"run_id" => "018f5f62-3ef4-7d31-9e6d-8f6dfeddb847"}, task: task, reservation: nil)
+    end
+    assert_raises(ArgumentError) do
+      backend.analyze(
+        packet: {"run_id" => "018f5f62-3ef4-7d31-9e6d-8f6dfeddb847"}, task: task,
+        reservation: Cyborg::Analysis::Reservation.new(cost_micros: 2_000)
+      )
+    end
   end
 
   def test_rejects_fixture_output_over_the_task_bound
@@ -38,6 +54,6 @@ class CyborgAnalysisFixtureBackendTest < Minitest::Test
   end
 
   def reservation
-    {cost_micros: 1_000}
+    Cyborg::Analysis::Reservation.new(cost_micros: 1_000)
   end
 end

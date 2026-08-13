@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "time"
+require "date"
 
 module Cyborg
   module Analysis
@@ -26,16 +27,23 @@ module Cyborg
         value.freeze
       end
 
-      def value_class(name, members, defaults: {}, validator: nil, &block)
+      def value_class(name, members, defaults: {}, aliases: {}, validator: nil, &block)
         klass = Data.define(*members)
         generated_new = klass.method(:new)
         constructor = Module.new do
           define_method(:new) do |*args, **kwargs|
             values = if args.empty?
-              unknown = kwargs.keys.map(&:to_sym) - members
+              unknown = kwargs.keys.map(&:to_sym) - members - aliases.keys
               raise ArgumentError, "unknown #{name} fields: #{unknown.join(", ")}" unless unknown.empty?
 
-              members.map { |member| kwargs.key?(member) ? kwargs[member] : defaults[member] }
+              members.map do |member|
+                alias_keys = aliases.select { |_alias, canonical| canonical == member }.keys
+                supplied_aliases = alias_keys.select { |key| kwargs.key?(key) }
+                if kwargs.key?(member) && !supplied_aliases.empty?
+                  raise ArgumentError, "duplicate #{name} field: #{member}"
+                end
+                kwargs.key?(member) ? kwargs[member] : kwargs.fetch(supplied_aliases.first, defaults[member])
+              end
             else
               raise ArgumentError, "#{name} expects #{members.length} values" unless kwargs.empty? && args.length == members.length
 
@@ -75,24 +83,37 @@ module Cyborg
       rescue ArgumentError, TypeError
         raise ArgumentError, "#{field} must be a Time or RFC3339 timestamp"
       end
+
+      def canonical_date(value, field)
+        return nil if value.nil?
+        return value.iso8601 if value.is_a?(Date)
+
+        Date.iso8601(value.to_s).iso8601
+      rescue ArgumentError, TypeError
+        raise ArgumentError, "#{field} must be an ISO 8601 date"
+      end
     end
 
     PriceCatalog = Contracts.value_class(
       "PriceCatalog",
-      %i[provider model input_micros_per_token output_micros_per_token last_verified_at source_url],
+      %i[provider model input_micros_per_token output_micros_per_token effective_date last_verified_at source_url],
+      aliases: {verified_at: :last_verified_at},
       defaults: {provider: nil, model: nil, input_micros_per_token: nil, output_micros_per_token: nil,
-                  last_verified_at: nil, source_url: nil},
+                 effective_date: nil, last_verified_at: nil, source_url: nil},
       validator: lambda do |values|
-        provider, model, input_rate, output_rate, verified_at, source_url = values
+        provider, model, input_rate, output_rate, effective_date, verified_at, source_url = values
         Contracts.nonblank(provider, "provider")
         Contracts.nonblank(model, "model")
         Contracts.strict_integer(input_rate, "input_micros_per_token")
         Contracts.strict_integer(output_rate, "output_micros_per_token")
-        values[4] = Contracts.canonical_time(verified_at, "last_verified_at")
-        values[5] = source_url.to_s unless source_url.nil?
+        values[4] = Contracts.canonical_date(effective_date, "effective_date")
+        values[5] = Contracts.canonical_time(verified_at, "verified_at")
+        values[6] = source_url.to_s unless source_url.nil?
         values
       end
     ) do
+      alias verified_at last_verified_at
+
       def stale?(now: Time.now.utc, max_age_seconds: PRICE_CATALOG_MAX_AGE_SECONDS)
         return true if last_verified_at.nil?
 
@@ -128,6 +149,12 @@ module Cyborg
           values[0] = cost
         else
           values[0] = Contracts.strict_integer(cost, "cost_micros")
+          token_rates = values[1..4]
+          if token_rates.any? && !token_rates.all?(&:nil?)
+            raise ArgumentError, "reservation token/rate values must be complete"
+          elsif token_rates.all? && values[0] != (values[1] * values[3] + values[2] * values[4])
+            raise ArgumentError, "reservation cost_micros does not match token/rate values"
+          end
         end
         values
       end
@@ -198,20 +225,25 @@ module Cyborg
         unless USAGE_CERTAINTIES.include?(certainty.to_s)
           raise ArgumentError, "unsupported usage certainty"
         end
+        if %w[provider_reported locally_estimated].include?(certainty.to_s) && cost.nil?
+          raise ArgumentError, "#{certainty} usage requires known cost_micros"
+        end
         values[9] = certainty.to_s
         values[10] = Contracts.canonical_time(created, "created_at") if created
         values
       end
     ) do
       def reported?
-        %w[provider_reported locally_estimated].include?(certainty)
+        certainty == "provider_reported"
       end
     end
 
     UsageSummary = Contracts.value_class(
       "UsageSummary",
-      %i[records reserved_cost_micros reported_cost_micros certainty warnings],
-      defaults: {records: [], reserved_cost_micros: 0, reported_cost_micros: 0, certainty: "unknown", warnings: []}
+      %i[records reserved_cost_micros reported_cost_micros provider_reported_cost_micros locally_estimated_cost_micros unknown_cost_micros certainty warnings],
+      defaults: {records: [], reserved_cost_micros: 0, reported_cost_micros: 0,
+                 provider_reported_cost_micros: 0, locally_estimated_cost_micros: 0,
+                 unknown_cost_micros: 0, certainty: "unknown", warnings: []}
     )
 
     ReservationEntry = Contracts.value_class(
