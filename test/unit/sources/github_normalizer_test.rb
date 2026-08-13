@@ -46,7 +46,7 @@ class CyborgGithubNormalizerTest < Minitest::Test
     record = @normalizer.normalize(
       {
         "id" => "unsafe", "reason" => "mention", "type" => "IssueComment",
-        "subject" => {"title" => "A comment"},
+        "subject" => {"title" => "A comment", "url" => "https://api.github.example/repos/acme/cyborg/issues/42"},
         "repository" => {"full_name" => "acme/cyborg", "node_id" => "repo-node"},
         "updated_at" => "2026-08-12T12:00:00Z"
       },
@@ -199,5 +199,39 @@ class CyborgGithubNormalizerTest < Minitest::Test
     )
 
     assert_nil record.canonical_target_id
+  end
+
+  def test_numeric_rest_id_is_not_used_as_stable_target_identity
+    record = @normalizer.normalize(
+      {
+        "id" => "numeric-id", "reason" => "mention", "type" => "Issue",
+        "subject" => {"title" => "Mention", "url" => "https://api.github.example/repos/acme/cyborg/issues/7"},
+        "repository" => {"full_name" => "acme/cyborg", "node_id" => "repo-node"}
+      },
+      context: @context,
+      metadata: {"id" => 12345, "number" => 7, "title" => "Mention", "body" => "Mention"}
+    )
+
+    assert_nil record.canonical_target_id
+  end
+
+  def test_actionable_record_with_missing_or_hostile_subject_identity_is_excluded
+    [
+      {"title" => "Missing URL"},
+      {"title" => "Hostile", "url" => "https://evil.example/repos/acme/cyborg/issues/7"},
+      {"title" => "Missing number", "url" => "https://api.github.example/repos/acme/cyborg/issues/not-a-number"}
+    ].each do |subject|
+      record = @normalizer.normalize(
+        {
+          "id" => "invalid-subject", "reason" => "mention", "type" => "Issue",
+          "subject" => subject,
+          "repository" => {"full_name" => "acme/cyborg", "node_id" => "repo-node"}
+        },
+        context: @context,
+        metadata: {"node_id" => "issue-node", "number" => 7, "title" => "Mention", "body" => "Mention"}
+      )
+
+      assert_nil record
+    end
   end
 end

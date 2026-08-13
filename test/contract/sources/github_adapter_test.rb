@@ -236,7 +236,28 @@ class CyborgGithubAdapterTest < Minitest::Test
 
     result = Cyborg::GithubAdapter.new(runner:, gh: "gh", hostname: "github.example", per_page: 2).fetch(@context)
 
-    assert_equal "failed", result.status
+    assert_equal "degraded", result.status
+    assert_equal "github.invalid_response", result.error.code
+    assert_empty result.records
+  end
+
+  def test_missing_or_hostile_issue_subject_identity_degrades_without_unsafe_record
+    notifications = JSON.generate([
+      {
+        "id" => "bad-subject", "reason" => "mention", "type" => "Issue",
+        "subject" => {"title" => "Bad", "url" => "https://evil.example/repos/acme/cyborg/issues/7"},
+        "repository" => {"full_name" => "acme/cyborg", "node_id" => "repo-node"}
+      }
+    ])
+    runner = FakeRunner.new(
+      "notifications?" => reply(notifications),
+      "/issues/7" => reply(JSON.generate("node_id" => "issue-node", "number" => 7, "title" => "Bad")),
+      :default => reply(fixture("github/authenticated.json"))
+    )
+
+    result = Cyborg::GithubAdapter.new(runner:, gh: "gh", hostname: "github.example", per_page: 2).fetch(@context)
+
+    assert_equal "degraded", result.status
     assert_equal "github.invalid_response", result.error.code
     assert_empty result.records
   end

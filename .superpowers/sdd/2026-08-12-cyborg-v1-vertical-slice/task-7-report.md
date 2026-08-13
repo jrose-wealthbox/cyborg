@@ -131,3 +131,42 @@ bundle exec ruby -Itest test/contract/sources/github_adapter_test.rb && \
 10 runs, 39 assertions, 0 failures, 0 errors, 0 skips
 3 runs, 11 assertions, 0 failures, 0 errors, 0 skips
 ```
+
+## Fix round 2: stable identity and malformed subjects
+
+### RED
+
+Added regressions for numeric REST IDs, missing/hostile subject URLs, and
+adapter degradation. The focused suites initially showed:
+
+```text
+github_adapter_test: 18 runs, 49 assertions, 1 failure
+github_normalizer_test: 12 runs, 41 assertions, 2 failures
+```
+
+The failures demonstrated that `metadata["id"]` was used as a stable target,
+hostile or missing subject URLs could still produce healthy records, and a
+missing identity was not consistently surfaced at the adapter boundary.
+
+### GREEN
+
+- Stable targets now require nonblank repository and issue/PR node IDs; numeric
+  REST IDs are never used as identity.
+- Included actionable notifications require a valid HTTPS subject URL on the
+  configured host or its API host, with a valid issue/PR number.
+- Invalid identity is excluded by the normalizer and causes the adapter to
+  return a degraded result with `github.invalid_response`, no unsafe record,
+  and the incoming cursor held.
+- Existing trusted-link tests now distinguish a valid subject URL from an
+  untrusted display/deep link.
+
+Fix-round focused verification:
+
+```text
+bundle exec ruby -Itest test/contract/sources/github_adapter_test.rb && \
+  bundle exec ruby -Itest test/unit/sources/github_normalizer_test.rb && \
+  bundle exec ruby -Itest test/unit/process_runner_test.rb
+18 runs, 52 assertions, 0 failures, 0 errors, 0 skips
+12 runs, 43 assertions, 0 failures, 0 errors, 0 skips
+3 runs, 11 assertions, 0 failures, 0 errors, 0 skips
+```

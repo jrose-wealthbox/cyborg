@@ -112,13 +112,20 @@ module Cyborg
 
           metadata = metadata_for(notification, context)
           record = normalizer.normalize(notification, context:, metadata:)
+          if record.nil?
+            partial = true
+            break
+          end
           if record && %w[github_issue github_pr].include?(record.canonical_target_type) && record.canonical_target_id.nil?
-            raise Failure.new("github.invalid_response")
+            partial = true
+            break
           end
           records << record if record
         end
         last_page = page
         fetched_pages += 1
+
+        break if partial
 
         if records.length >= max_records && response.length >= per_page
           partial = true
@@ -203,6 +210,7 @@ module Cyborg
     def metadata_for(notification, context)
       notification = stringify_hash(notification)
       subject = stringify_hash(notification["subject"] || {})
+      return {} unless trusted_subject_url?(subject["url"])
       path = api_path(subject["url"])
       return {} unless path
 
@@ -214,6 +222,13 @@ module Cyborg
       raise Failure.new("github.invalid_response") unless metadata.is_a?(Hash)
 
       metadata
+    end
+
+    def trusted_subject_url?(value)
+      uri = URI.parse(value.to_s)
+      uri.scheme == "https" && [@hostname, "api.#{@hostname}"].include?(uri.host) && uri.userinfo.nil? && uri.query.nil? && uri.fragment.nil?
+    rescue URI::InvalidURIError
+      false
     end
 
     def api_path(value)

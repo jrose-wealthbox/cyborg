@@ -35,9 +35,10 @@ module Cyborg
 
       type = notification["type"].to_s
       number = integer_value(metadata["number"]) || number_from_api_url(subject["url"])
-      target_node_id = metadata["node_id"] || subject["node_id"] || metadata["id"]
+      target_node_id = metadata["node_id"] || subject["node_id"]
       repository_node_id = repository["node_id"] || metadata.dig("repository", "node_id")
       target_type = target_type_for(type, metadata, subject)
+      return nil unless target_type && valid_subject_identity?(subject["url"], number)
       title = bounded_text(metadata["title"] || subject["title"] || full_name)
       summary = bounded_text(metadata["body"] || subject["title"] || notification["reason"])
       event_at = canonical_time(notification["updated_at"] || metadata["updated_at"] || metadata["created_at"] || context.window_end_utc)
@@ -100,6 +101,18 @@ module Cyborg
       return nil if repository_node_id.to_s.empty? || target_node_id.to_s.empty?
 
       [hostname, repository_node_id, target_node_id].join(":")
+    end
+
+    def valid_subject_identity?(url, number)
+      return false unless number
+
+      uri = URI.parse(url.to_s)
+      return false unless uri.scheme == "https" && [hostname, "api.#{hostname}"].include?(uri.host)
+      return false if uri.userinfo || uri.query || uri.fragment
+
+      uri.path.to_s.match?(%r{/repos/[^/\s]+/[^/\s]+/(?:pulls|issues)/#{number}\z})
+    rescue URI::InvalidURIError
+      false
     end
 
     private
