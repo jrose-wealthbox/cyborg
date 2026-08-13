@@ -193,6 +193,83 @@ class CyborgBridgeCLITest < Minitest::Test
     assert_equal 0, packet[:status], packet[:stderr]
   end
 
+  def test_sequential_host_batches_for_one_source_account_share_one_snapshot
+    File.open(@config, "a") do |file|
+      file.write(<<~TOML)
+
+        [sources.github]
+        enabled = true
+        adapter = "github"
+        transport = "host_bridge"
+        account = "me"
+        required = true
+        capabilities = ["notifications", "mentions"]
+        [sources.github.operations]
+        notifications = "github.notifications.read"
+        mentions = "github.mentions.read"
+      TOML
+    end
+
+    prepared = run_cli("prepare", "--profile", "default", "--artifact-dir", @artifacts)
+    assert_equal 0, prepared[:status], prepared[:stderr]
+    handoff = JSON.parse(prepared[:stdout])
+    run_id = handoff.fetch("run_id")
+    requests = JSON.parse(File.read(handoff.fetch("retrieval_requests"))).fetch("payload")
+    assert_equal 2, requests.length
+
+    responses = requests.each_with_index.map do |request, index|
+      {
+        "request_id" => request.fetch("id"), "status" => "healthy", "data_status" => "fresh",
+        "started_at" => request.fetch("window_start_utc"), "completed_at" => request.fetch("window_end_utc"),
+        "records" => [{
+          "source_record_id" => "batch-record-#{index + 1}", "record_kind" => "notification",
+          "title" => "Batch record #{index + 1}", "summary" => "A bounded batch record",
+          "structured_fields" => {"batch" => index + 1}, "participants" => [], "owner_identity" => "me",
+          "event_at" => request.fetch("window_end_utc"), "observed_at" => request.fetch("window_end_utc"),
+          "timestamp_kind" => "event_at", "content_fingerprint" => "batch-fp-#{index + 1}"
+        }], "next_cursor" => "capability:#{index + 1}"
+      }
+    end
+
+    first_path = File.join(@artifacts, run_id, "batch-one.json")
+    first_envelope = Cyborg::Bridge::Envelope.build(
+      type: "retrieval_responses", run_id:, payload: {"responses" => [responses.fetch(0)]}, created_at: Time.now.utc
+    )
+    File.write(first_path, Cyborg::Bridge::CanonicalJSON.dump(first_envelope))
+    first = run_cli("ingest", "--run", run_id, "--lease-file", handoff.fetch("lease_file"), "--input", first_path)
+    assert_equal 0, first[:status], first[:stderr]
+
+    second_path = File.join(@artifacts, run_id, "batch-two.json")
+    second_envelope = Cyborg::Bridge::Envelope.build(
+      type: "retrieval_responses", run_id:, payload: {"responses" => [responses.fetch(1)]}, created_at: Time.now.utc
+    )
+    File.write(second_path, Cyborg::Bridge::CanonicalJSON.dump(second_envelope))
+    second = run_cli("ingest", "--run", run_id, "--lease-file", handoff.fetch("lease_file"), "--input", second_path)
+    assert_equal 0, second[:status], second[:stderr]
+
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    snapshot_count = database.get_first_value("SELECT COUNT(*) FROM source_snapshots WHERE run_id = ?", run_id)
+    record_count = database.get_first_value("SELECT COUNT(*) FROM snapshot_records WHERE snapshot_id IN (SELECT id FROM source_snapshots WHERE run_id = ?)", run_id)
+    database.close
+    assert_equal 1, snapshot_count
+    assert_equal 2, record_count
+
+    duplicate = run_cli("ingest", "--run", run_id, "--lease-file", handoff.fetch("lease_file"), "--input", second_path)
+    assert_equal 0, duplicate[:status], duplicate[:stderr]
+
+    changed_response = responses.fetch(0).merge("next_cursor" => "capability:changed")
+    changed_path = File.join(@artifacts, run_id, "batch-changed.json")
+    changed_envelope = Cyborg::Bridge::Envelope.build(
+      type: "retrieval_responses", run_id:, payload: {"responses" => [changed_response]}, created_at: Time.now.utc
+    )
+    File.write(changed_path, Cyborg::Bridge::CanonicalJSON.dump(changed_envelope))
+    changed = run_cli("ingest", "--run", run_id, "--lease-file", handoff.fetch("lease_file"), "--input", changed_path)
+    assert_equal 65, changed[:status]
+
+    packet = run_cli("analysis-packet", "--run", run_id, "--lease-file", handoff.fetch("lease_file"))
+    assert_equal 0, packet[:status], packet[:stderr]
+  end
+
   def test_prepare_ingests_bounded_fixture_source_without_network
     fixture_path = File.expand_path("../fixtures/sources/fixture-records.json", __dir__)
     File.open(@config, "a") do |file|

@@ -10,28 +10,23 @@ module Cyborg
         attrs = if attributes
           attributes.to_h
         elsif result
-          result_attrs = result.to_h
-          registration_attrs = registration.respond_to?(:to_h) ? registration.to_h : {}
-          run_attrs = run.respond_to?(:to_h) ? run.to_h : {}
-          error = result_attrs[:error]
-          {
-            id: result_attrs[:id] || SecureRandom.uuid,
-            run_id: run_attrs[:id] || run&.id,
-            source_name: result_attrs[:source_name] || registration_attrs[:source_name] || registration&.source_name,
-            account_identity: result_attrs[:account_identity] || registration_attrs[:account_identity] || registration&.account_identity,
-            adapter_version: result_attrs[:adapter_version] || registration_attrs[:adapter_version] || registration&.adapter_version,
-            started_at: result_attrs[:started_at], completed_at: result_attrs[:completed_at],
-            status: result_attrs[:status], data_status: result_attrs[:data_status], cache_reason: result_attrs[:cache_reason],
-            error_code: error&.code, error_remediation: error&.remediation,
-            record_count: Array(result_attrs[:records]).length, proposed_cursor: result_attrs[:next_cursor],
-            cursor_disposition: cursor_disposition || "hold", prior_activated_snapshot_id: options[:prior_activated_snapshot_id]
-          }
+          snapshot_values(
+            run:, registration:, result:, cursor_disposition: cursor_disposition || "hold",
+            prior_activated_snapshot_id: options[:prior_activated_snapshot_id]
+          ).merge(id: result.to_h[:id] || SecureRandom.uuid)
         else
           options
         end
         validate_timestamps!(attrs, %i[started_at completed_at])
         db[:source_snapshots].insert(attrs)
         snapshot(attrs.fetch(:id))
+      end
+
+      def update_snapshot(snapshot_id:, run:, registration:, result:, cursor_disposition:, prior_activated_snapshot_id:)
+        attrs = snapshot_values(run:, registration:, result:, cursor_disposition:, prior_activated_snapshot_id:)
+        validate_timestamps!(attrs, %i[started_at completed_at])
+        db[:source_snapshots].where(id: snapshot_id).update(attrs)
+        snapshot(snapshot_id)
       end
 
       def snapshot(id)
@@ -57,6 +52,26 @@ module Cyborg
           update: values.reject { |key, _| %i[source_name account_identity].include?(key) }
         ).insert(values)
         baseline_for(source_name, account_identity)
+      end
+
+      private
+
+      def snapshot_values(run:, registration:, result:, cursor_disposition:, prior_activated_snapshot_id:)
+        result_attrs = result.to_h
+        registration_attrs = registration.respond_to?(:to_h) ? registration.to_h : {}
+        run_attrs = run.respond_to?(:to_h) ? run.to_h : {}
+        error = result_attrs[:error]
+        {
+          run_id: run_attrs[:id] || run&.id,
+          source_name: result_attrs[:source_name] || registration_attrs[:source_name] || registration&.source_name,
+          account_identity: result_attrs[:account_identity] || registration_attrs[:account_identity] || registration&.account_identity,
+          adapter_version: result_attrs[:adapter_version] || registration_attrs[:adapter_version] || registration&.adapter_version,
+          started_at: result_attrs[:started_at], completed_at: result_attrs[:completed_at],
+          status: result_attrs[:status], data_status: result_attrs[:data_status], cache_reason: result_attrs[:cache_reason],
+          error_code: error&.code, error_remediation: error&.remediation,
+          record_count: Array(result_attrs[:records]).length, proposed_cursor: result_attrs[:next_cursor],
+          cursor_disposition:, prior_activated_snapshot_id:
+        }
       end
     end
   end

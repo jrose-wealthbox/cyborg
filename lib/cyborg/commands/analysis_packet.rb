@@ -77,10 +77,11 @@ module Cyborg
       end
 
       def snapshot_terminal_for?(snapshot, response)
-        snapshot.status.to_s == response.fetch("status").to_s &&
-          snapshot.data_status.to_s == response.fetch("data_status").to_s &&
-          snapshot.record_count == Array(response["records"]).length &&
-          snapshot.proposed_cursor == response["next_cursor"]
+        %w[healthy degraded failed].include?(snapshot.status.to_s) &&
+          %w[fresh cached none].include?(snapshot.data_status.to_s) &&
+          snapshot.completed_at.is_a?(String) &&
+          %w[healthy degraded failed].include?(response.fetch("status").to_s) &&
+          %w[fresh cached none].include?(response.fetch("data_status").to_s)
       end
 
       def retrieval_requests(store:, run_id:)

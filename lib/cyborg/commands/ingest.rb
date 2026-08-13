@@ -19,6 +19,7 @@ module Cyborg
           requests = retrieval_requests(store:, run_id:)
           request_by_id = requests.to_h { |request| [request.fetch("id"), request] }
           ingested = []
+          pending = {}
           responses.each do |raw_response|
             response = normalize(raw_response)
             request_id = response["request_id"].to_s
@@ -41,11 +42,29 @@ module Cyborg
               next
             end
 
-            registration = registration_for(request.fetch("source_name"), request["account_identity"])
-            result = retrieval_result(response, request)
+            previous = pending[request_id]
+            if previous
+              if Bridge::CanonicalJSON.dump(previous.fetch(:payload)) != Bridge::CanonicalJSON.dump(response_payload)
+                record_changed_response!(store:, run_id:, request_id:, submitted: response_payload, existing: previous.fetch(:payload))
+                raise InvalidArtifact.new("bridge.changed_response", exit_status: 65)
+              end
+              next
+            end
+            pending[request_id] = {request:, response:, payload: response_payload, filename:}
+          end
+
+          pending.values.group_by { |item| [item.fetch(:request).fetch("source_name"), item.fetch(:request)["account_identity"]] }.each_value do |group|
+            registration = registration_for(group.first.fetch(:request).fetch("source_name"), group.first.fetch(:request)["account_identity"])
+            prior = persisted_group_responses(store:, run_id:, requests:, request: group.first.fetch(:request))
+            values = prior + group.map { |item| item.fetch(:response) }
+            result = aggregate_result(values, request_by_id)
             SourceIngestor.new(db:).ingest(run:, registration:, result:)
-            write_envelope(store:, run_id:, filename:, type: "retrieval_responses", payload: response_payload)
-            ingested << request_id
+            group.each do |item|
+              write_envelope(
+                store:, run_id:, filename: item.fetch(:filename), type: "retrieval_responses", payload: item.fetch(:payload)
+              )
+              ingested << item.fetch(:request).fetch("id")
+            end
           end
           stdout.puts safe_json("run_id" => run_id, "status" => run.status, "ingested" => ingested)
           0
@@ -67,6 +86,80 @@ module Cyborg
           raise InvalidArtifact.new("bridge.unsafe_request_id", exit_status: 65)
         end
         value
+      end
+
+      def record_changed_response!(store:, run_id:, request_id:, submitted:, existing:)
+        store.record_validation_failure!(
+          run_id:, code: "bridge.changed_response", command: "ingest", request_id:,
+          submitted_payload_sha256: Bridge::CanonicalJSON.sha256(submitted),
+          existing_payload_sha256: Bridge::CanonicalJSON.sha256(existing), at: container.clock.now
+        )
+      end
+
+      def persisted_group_responses(store:, run_id:, requests:, request:)
+        requests.filter_map do |candidate|
+          next unless candidate.fetch("source_name") == request.fetch("source_name")
+          next unless candidate["account_identity"].to_s == request["account_identity"].to_s
+
+          path = store.root.join(run_id, "retrieval-response-#{safe_request_id(candidate.fetch("id"))}.json")
+          begin
+            path.lstat
+          rescue Errno::ENOENT
+            next
+          end
+          payload = load_envelope(store:, path:, expected_type: "retrieval_responses", run_id:)
+          values = payload.is_a?(Hash) ? payload["responses"] : nil
+          raise InvalidArtifact.new("bridge.invalid_response", exit_status: 65) unless values.is_a?(Array) && values.length == 1
+
+          response = normalize(values.fetch(0))
+          raise InvalidArtifact.new("bridge.request_mismatch", exit_status: 65) unless response["request_id"].to_s == candidate.fetch("id").to_s
+
+          response
+        end
+      end
+
+      def aggregate_result(values, request_by_id)
+        results = values.map do |response|
+          request = request_by_id.fetch(response.fetch("request_id"))
+          retrieval_result(response, request)
+        end
+        statuses = results.map(&:status)
+        data_statuses = results.map(&:data_status).uniq
+        successful = results.reject { |result| result.status == "failed" }
+        status = if successful.empty?
+          "failed"
+        elsif statuses.include?("failed") || statuses.include?("degraded") || data_statuses.length > 1
+          "degraded"
+        else
+          "healthy"
+        end
+        successful_data_statuses = successful.map(&:data_status).uniq
+        data_status = if successful.empty?
+          "none"
+        elsif successful_data_statuses == ["cached"]
+          "cached"
+        else
+          "fresh"
+        end
+        errors = results.filter_map(&:error)
+        error = errors.first
+        error ||= RetrievalError.new(
+          code: "bridge.aggregate_response", message: "host responses for one source were not uniformly healthy",
+          remediation: "retry the source batch"
+        ) unless status == "healthy"
+        cursors = results.map(&:next_cursor)
+        cursor = cursors.uniq.length == 1 ? cursors.first : nil
+        RetrievalResult.new(
+          source_name: results.first.source_name, account_identity: results.first.account_identity,
+          status:, data_status:, cache_reason: if data_status == "cached"
+            status == "healthy" ? results.first.cache_reason : "failure_fallback"
+          end,
+          started_at: results.map { |result| Time.iso8601(result.started_at) }.min,
+          completed_at: results.map { |result| Time.iso8601(result.completed_at) }.max,
+          records: results.flat_map(&:records), next_cursor: cursor, error:
+        )
+      rescue KeyError, ArgumentError => error
+        raise InvalidArtifact.new("bridge.invalid_response", error.message, exit_status: 65)
       end
 
       def retrieval_result(response, request)

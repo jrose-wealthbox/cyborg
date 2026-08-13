@@ -20,12 +20,22 @@ module Cyborg
       end
       disposition = result.complete_fresh? ? "advance" : "hold"
       baseline = @sources.baseline_for(registration.source_name, registration.account_identity)
+      existing = @sources.snapshots_for_run(run.id).find do |snapshot|
+        snapshot.source_name == registration.source_name && snapshot.account_identity == registration.account_identity
+      end
 
       @db.transaction do
-        snapshot = @sources.create_snapshot(
-          run:, registration:, result:, cursor_disposition: disposition,
-          prior_activated_snapshot_id: baseline&.fetch(:activated_snapshot_id)
-        )
+        snapshot = if existing
+          @sources.update_snapshot(
+            snapshot_id: existing.id, run:, registration:, result:, cursor_disposition: disposition,
+            prior_activated_snapshot_id: baseline&.fetch(:activated_snapshot_id)
+          )
+        else
+          @sources.create_snapshot(
+            run:, registration:, result:, cursor_disposition: disposition,
+            prior_activated_snapshot_id: baseline&.fetch(:activated_snapshot_id)
+          )
+        end
         result.records.each { |record| persist_record(snapshot, run, registration, record) }
         snapshot
       end
