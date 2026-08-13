@@ -6,7 +6,7 @@ This is a compact retrieval catalog. Read the linked entry before using it for a
 
 | ID | Type | Status | Updated | Last verified | Topic/components | Summary | Entry |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| ADR-20260813-progressive-memory-candidate-hooks | decision | active | 2026-08-13T00:46:09Z | 2026-08-13T00:46:09Z | adapters, bin/extract-memory-candidates, lib/cyborg/memory_candidates, docs/memory | Session-end adapters only normalize and enqueue bounded work; a detached provider-neutral worker may create non-authoritative candidate entries for explicit review. | [entry](decisions/ADR-20260813-progressive-memory-candidate-hooks.md) |
+| ADR-20260813-progressive-memory-candidate-hooks | decision | active | 2026-08-13T00:46:09Z | 2026-08-13T00:46:09Z | motherbrain/adapters, motherbrain/bin/extract-memory-candidates, motherbrain/lib/motherbrain/candidates, docs/memory | Session-end adapters only normalize and enqueue bounded work; a detached provider-neutral worker may create non-authoritative candidate entries for explicit review. | [entry](decisions/ADR-20260813-progressive-memory-candidate-hooks.md) |
 
 ## Candidates
 

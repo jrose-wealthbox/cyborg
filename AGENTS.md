@@ -2,13 +2,13 @@
 
 ## Purpose
 
-This file contains the repository's always-on, agent-agnostic rules. Keep it short and limited to rules that apply to every task. Detailed memory procedures live in [`docs/memory/PROTOCOL.md`](docs/memory/PROTOCOL.md) and must be read when maintaining the memory system.
+This file contains the repository's always-on, agent-agnostic rules. Keep it short and limited to rules that apply to every task. Detailed memory procedures live in [`motherbrain/docs/PROTOCOL.md`](motherbrain/docs/PROTOCOL.md) and must be read when maintaining the memory system.
 
 ## Start every task
 
 1. Inspect the repository structure, relevant code, tests, and recent history before relying on remembered context.
 2. If `docs/memory/INDEX.md` exists, use it to find only the memory entries relevant to the task. Read accepted active entries first; candidate entries are searchable evidence with lower authority and must be verified before use.
-3. Before adding, correcting, retiring, or removing a memory entry, read [`docs/memory/PROTOCOL.md`](docs/memory/PROTOCOL.md).
+3. Before adding, correcting, retiring, or removing a memory entry, read [`motherbrain/docs/PROTOCOL.md`](motherbrain/docs/PROTOCOL.md).
 4. Before handoff, check whether the work created a durable learning, architecture decision, correction, or retirement. If so, update the entry and index in the same reviewable change.
 
 ## Durable memory rules
@@ -25,6 +25,10 @@ The tracked memory system is the source of truth for durable project knowledge, 
 - Entries under `docs/memory/candidates/` are provisional evidence, not project truth. Never promote, supersede, retire, or delete an accepted memory merely because a candidate conflicts with it.
 
 Candidate extraction hooks are optional and fail-open. The ordinary handoff checklist and manual memory workflow remain authoritative when no hook or extraction backend is installed.
+
+## Motherbrain boundary
+
+`motherbrain/` contains the reusable memory system: its Ruby implementation, small executables, harness adapters, tests, and protocol documentation. `docs/memory/` contains CYBORG's project-owned memory data and remains outside the portable component. Motherbrain is being dogfooded here with the long-term goal of extracting it into an installable plugin/skill for other projects; keep CYBORG-specific application behavior and memory entries out of `motherbrain/`.
 
 ## Agent interoperability
 

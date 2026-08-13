@@ -8,7 +8,7 @@ created_at: '2026-08-13T00:46:09Z'
 updated_at: '2026-08-13T00:46:09Z'
 last_verified_at: '2026-08-13T00:46:09Z'
 tags: [memory, hooks, candidates, security]
-components: [adapters, bin/extract-memory-candidates, lib/cyborg/memory_candidates, docs/memory]
+components: [motherbrain/adapters, motherbrain/bin/extract-memory-candidates, motherbrain/lib/motherbrain/candidates, docs/memory]
 supersedes: []
 superseded_by:
 ---
@@ -41,8 +41,8 @@ Both harnesses expose session provenance and a transcript path, but their sessio
 
 ## Evidence
 
-- [`docs/memory/HOOKS.md`](../HOOKS.md): documents the normalized contract, provider adapters, backend schema, limits, and fail-open operation.
-- [`test/cyborg/memory_candidates`](../../../test/cyborg/memory_candidates): verifies normalization, bounded transcript reading, redaction, idempotence, detached execution, indexing, promotion, dismissal, and failure modes.
+- [`motherbrain/docs/HOOKS.md`](../../../motherbrain/docs/HOOKS.md): documents the normalized contract, provider adapters, backend schema, limits, and fail-open operation.
+- [`motherbrain/test/motherbrain/candidates`](../../../motherbrain/test/motherbrain/candidates): verifies normalization, bounded transcript reading, redaction, idempotence, detached execution, indexing, promotion, dismissal, and failure modes.
 - [Claude Code hooks reference](https://code.claude.com/docs/en/hooks#sessionend-input): documents SessionEnd payloads, lack of decision control, and the default 1.5-second budget; accessed 2026-08-12.
 - [Codex app-server lifecycle](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md#example-unsubscribe-from-a-loaded-thread): documents advisory root-thread SessionEnd hooks and their timeout limits; accessed 2026-08-12.
 

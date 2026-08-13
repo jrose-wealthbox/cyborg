@@ -1,0 +1,23 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+$LOAD_PATH.unshift File.expand_path("../lib", __dir__)
+require "motherbrain"
+
+action = ARGV.shift
+id = ARGV.shift
+manager = Motherbrain::Candidates::CandidateManager.new(Dir.pwd)
+result = case action
+when "promote"
+  manager.promote(id)
+when "dismiss"
+  manager.dismiss(id, reason: ARGV.join(" "))
+end
+
+if result
+  puts result
+  exit 0
+else
+  warn "Candidate was not changed"
+  exit 1
+end
