@@ -11,7 +11,7 @@ class RedactorTest < Minitest::Test
     value = {
       "headers" => {"Authorization" => "Bearer top-secret"},
       "api_key" => "key-value",
-      "credentials" => {"access_token" => "token-value", "username" => "safe"},
+      "auth" => {"access_token" => "token-value", "username" => "safe"},
       "env" => {"OPENAI_API_KEY" => "sk-proj-never-log-this", "LANG" => "en_US"}
     }
 
@@ -19,10 +19,17 @@ class RedactorTest < Minitest::Test
 
     assert_equal "[REDACTED]", redacted.fetch("headers").fetch("Authorization")
     assert_equal "[REDACTED]", redacted.fetch("api_key")
-    assert_equal "[REDACTED]", redacted.fetch("credentials").fetch("access_token")
+    assert_equal "[REDACTED]", redacted.fetch("auth").fetch("access_token")
     assert_equal "[REDACTED]", redacted.fetch("env").fetch("OPENAI_API_KEY")
-    assert_equal "safe", redacted.fetch("credentials").fetch("username")
+    assert_equal "safe", redacted.fetch("auth").fetch("username")
     assert_equal "en_US", redacted.fetch("env").fetch("LANG")
+  end
+
+  def test_redacts_credential_and_credentials_keys
+    redacted = @redactor.call("credential" => "credential-value", "credentials" => "credentials-value")
+
+    assert_equal "[REDACTED]", redacted.fetch("credential")
+    assert_equal "[REDACTED]", redacted.fetch("credentials")
   end
 
   def test_redacts_prompt_source_body_and_command_stderr_fields

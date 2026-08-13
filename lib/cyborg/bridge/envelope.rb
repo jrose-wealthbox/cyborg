@@ -39,13 +39,13 @@ module Cyborg
 
         missing = REQUIRED_FIELDS.reject { |field| document.key?(field) }
         unless missing.empty?
-          raise invalid("bridge.missing_field", "Missing envelope field: #{missing.first}")
+          raise invalid("bridge.missing_field")
         end
 
         validate_schema_version!(document.fetch("schema_version"))
         artifact_type = document.fetch("artifact_type")
         unless SUPPORTED_TYPES.include?(artifact_type)
-          raise invalid("bridge.unknown_type", "Unknown artifact type: #{artifact_type}")
+          raise invalid("bridge.unknown_type")
         end
         if artifact_type != expected_type.to_s
           raise invalid("bridge.type_mismatch", "Unexpected artifact type")
@@ -67,14 +67,14 @@ module Cyborg
         end
 
         document.fetch("payload")
-      rescue KeyError => error
-        raise invalid("bridge.missing_field", error.message)
+      rescue KeyError
+        raise invalid("bridge.missing_field")
       end
 
       def validate_schema_version!(version)
-        match = version.to_s.match(/\A(\d+)\.(\d+)\z/)
+        match = version.is_a?(String) && version.match(/\A(0|[1-9]\d*)\.(0|[1-9]\d*)\z/)
         unless match && match[1].to_i == SUPPORTED_SCHEMA_MAJOR && match[2].to_i <= SUPPORTED_SCHEMA_MINOR
-          raise invalid("bridge.unsupported_version", "Unsupported schema version: #{version}")
+          raise invalid("bridge.unsupported_version")
         end
       end
       private_class_method :validate_schema_version!
@@ -84,9 +84,12 @@ module Cyborg
           raise invalid("bridge.invalid_created_at", "created_at must be RFC 3339 text")
         end
 
-        Time.iso8601(value)
+        time = Time.iso8601(value)
+        unless time.utc.iso8601 == value
+          raise invalid("bridge.invalid_created_at")
+        end
       rescue ArgumentError
-        raise invalid("bridge.invalid_created_at", "created_at must be RFC 3339 text")
+        raise invalid("bridge.invalid_created_at")
       end
       private_class_method :validate_created_at!
 
@@ -98,13 +101,13 @@ module Cyborg
                  raise ArgumentError, "created_at must be a Time or RFC 3339 string"
                end
         time.utc.iso8601
-      rescue ArgumentError => error
-        raise invalid("bridge.invalid_created_at", error.message)
+      rescue ArgumentError
+        raise invalid("bridge.invalid_created_at")
       end
       private_class_method :normalize_created_at
 
-      def invalid(code, message = code)
-        Cyborg::InvalidArtifact.new(code, message, exit_status: 65)
+      def invalid(code, _message = nil)
+        Cyborg::InvalidArtifact.new(code, code, exit_status: 65)
       end
       private_class_method :invalid
     end

@@ -55,6 +55,35 @@ class BridgeEnvelopeTest < Minitest::Test
     end
   end
 
+  def test_rejects_numeric_and_noncanonical_schema_versions
+    [1.0, "1.00"].each do |version|
+      error = assert_raises(Cyborg::InvalidArtifact) do
+        Envelope.validate!(@document.merge("schema_version" => version), expected_type: TYPE, expected_run_id: RUN_ID)
+      end
+
+      assert_equal "bridge.unsupported_version", error.code
+    end
+  end
+
+  def test_rejects_noncanonical_non_utc_created_at_values
+    ["2026-08-12T16:00:00-04:00", "2026-08-12T20:00:00+00:00"].each do |created_at|
+      error = assert_raises(Cyborg::InvalidArtifact) do
+        Envelope.validate!(@document.merge("created_at" => created_at), expected_type: TYPE, expected_run_id: RUN_ID)
+      end
+
+      assert_equal "bridge.invalid_created_at", error.code
+    end
+  end
+
+  def test_error_messages_do_not_echo_untrusted_artifact_values
+    error = assert_raises(Cyborg::InvalidArtifact) do
+      Envelope.validate!(@document.merge("artifact_type" => "secret-token-value"), expected_type: TYPE, expected_run_id: RUN_ID)
+    end
+
+    assert_equal "bridge.unknown_type", error.message
+    refute_includes error.message, "secret-token-value"
+  end
+
   def test_rejects_payload_hash_mismatch
     error = assert_raises(Cyborg::InvalidArtifact) do
       Envelope.validate!(@document.merge("payload_sha256" => "0" * 64), expected_type: TYPE, expected_run_id: RUN_ID)

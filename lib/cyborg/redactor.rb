@@ -3,7 +3,7 @@
 module Cyborg
   class Redactor
     REDACTION = "[REDACTED]"
-    SENSITIVE_KEY = /authorization|api[_-]?key|access[_-]?token|password|secret|private[_-]?key|client[_-]?secret|\btoken\b/i
+    SENSITIVE_KEY = /authorization|api[_-]?key|access[_-]?token|password|secret|credential|private[_-]?key|client[_-]?secret|\btoken\b/i
     PRIVATE_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/m
     SECRET_VALUE_PATTERNS = [
       PRIVATE_KEY,

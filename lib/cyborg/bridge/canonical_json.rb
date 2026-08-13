@@ -14,8 +14,8 @@ module Cyborg
 
       def dump(value)
         JSON.generate(normalize(value), ascii_only: false)
-      rescue JSON::GeneratorError, EncodingError => error
-        raise Cyborg::InvalidArtifact.new("bridge.invalid_json", error.message, exit_status: 65)
+      rescue JSON::GeneratorError, EncodingError
+        raise Cyborg::InvalidArtifact.new("bridge.invalid_json", exit_status: 65)
       end
 
       def sha256(value)
@@ -54,14 +54,13 @@ module Cyborg
       end
 
       def normalize_key(key)
-        case key
-        when String, Symbol
-          key.to_s.encode(Encoding::UTF_8)
-        else
-          key.to_s.encode(Encoding::UTF_8)
+        unless key.is_a?(String) || key.is_a?(Symbol)
+          raise Cyborg::InvalidArtifact.new("bridge.invalid_json_key", exit_status: 65)
         end
-      rescue EncodingError => error
-        raise Cyborg::InvalidArtifact.new("bridge.invalid_json_key", error.message, exit_status: 65)
+
+        key.to_s.encode(Encoding::UTF_8)
+      rescue EncodingError
+        raise Cyborg::InvalidArtifact.new("bridge.invalid_json_key", exit_status: 65)
       end
       private_class_method :normalize_key
     end

@@ -64,8 +64,8 @@ module Cyborg
 
         document = JSON.parse(File.binread(path.to_s))
         Envelope.validate!(document, expected_type: expected_type, expected_run_id: expected_run_id)
-      rescue JSON::ParserError => error
-        raise Cyborg::InvalidArtifact.new("bridge.invalid_json", error.message, exit_status: 65)
+      rescue JSON::ParserError, EncodingError
+        raise Cyborg::InvalidArtifact.new("bridge.invalid_json", exit_status: 65)
       end
 
       # Removes payload files older than the retention window and writes only
@@ -83,14 +83,12 @@ module Cyborg
             stat = safe_lstat(path, raise_on_missing: false)
             next unless stat&.file?
 
-            metadata = metadata_for(path)
-            next unless metadata && Time.iso8601(metadata.fetch("created_at")) < cutoff
+            metadata = metadata_for(path, expected_run_id: run_directory.basename.to_s)
+            next unless Time.iso8601(metadata.fetch("created_at")) < cutoff
 
             append_audit(run_directory, metadata.merge("deleted_at" => now.utc.iso8601))
             File.delete(path.to_s)
             removed << path
-          rescue JSON::ParserError, ArgumentError, KeyError
-            next
           end
         end
         removed
@@ -191,30 +189,71 @@ module Cyborg
         end
       end
 
-      def metadata_for(path)
+      def metadata_for(path, expected_run_id:)
+        stat = safe_lstat(path)
+        unless stat.file?
+          raise Cyborg::UnsafeArtifact.new("bridge.unsafe_file", exit_status: 65)
+        end
+        if stat.size > @max_bytes
+          raise Cyborg::UnsafeArtifact.new("bridge.oversized_file", exit_status: 65)
+        end
+
         document = JSON.parse(File.binread(path.to_s))
+        Envelope.validate!(document, expected_type: document["artifact_type"], expected_run_id: expected_run_id)
         {
           "run_id" => document.fetch("run_id"),
           "artifact_type" => document.fetch("artifact_type"),
           "created_at" => document.fetch("created_at"),
           "payload_sha256" => document.fetch("payload_sha256")
         }
+      rescue JSON::ParserError, EncodingError
+        raise Cyborg::InvalidArtifact.new("bridge.invalid_json", exit_status: 65)
       end
 
       def append_audit(directory, entry)
         path = directory.join(AUDIT_FILENAME)
-        current = if File.file?(path.to_s)
-                    JSON.parse(File.read(path.to_s)).fetch("entries", [])
-                  else
-                    []
-                  end
+        current = read_audit_entries(path)
         current = current.is_a?(Array) ? current : []
+        current = current.map { |item| Redactor.new.call(item) }
         current << Redactor.new.call(entry)
         current = current.last(@audit_entries)
-        bytes = CanonicalJSON.dump({"entries" => current}).encode(Encoding::UTF_8)
+        bytes = bounded_audit_bytes(current, entry)
         atomic_write(path, bytes)
-      rescue JSON::ParserError, KeyError
-        atomic_write(path, CanonicalJSON.dump({"entries" => [Redactor.new.call(entry)]}).encode(Encoding::UTF_8))
+      end
+
+      def read_audit_entries(path)
+        stat = safe_lstat(path, raise_on_missing: false)
+        return [] if stat.nil?
+        unless stat.file?
+          raise Cyborg::UnsafeArtifact.new("bridge.unsafe_file", exit_status: 65)
+        end
+        if stat.size > @max_bytes
+          raise Cyborg::UnsafeArtifact.new("bridge.oversized_file", exit_status: 65)
+        end
+
+        document = JSON.parse(File.binread(path.to_s))
+        document.fetch("entries", [])
+      rescue JSON::ParserError, EncodingError, KeyError
+        raise Cyborg::InvalidArtifact.new("bridge.invalid_json", exit_status: 65)
+      end
+
+      def bounded_audit_bytes(entries, fallback)
+        current = entries.dup
+        loop do
+          bytes = CanonicalJSON.dump({"entries" => current}).encode(Encoding::UTF_8)
+          return bytes if bytes.bytesize <= @max_bytes
+          break if current.length <= 1
+
+          current.shift
+        end
+
+        # Keep a bounded, redacted diagnostic even when a pre-existing entry
+        # contains unexpectedly large optional fields.
+        safe_fallback = Redactor.new.call(fallback).slice("run_id", "artifact_type", "created_at", "payload_sha256", "deleted_at")
+        bytes = CanonicalJSON.dump({"entries" => [safe_fallback]}).encode(Encoding::UTF_8)
+        raise Cyborg::UnsafeArtifact.new("bridge.oversized_file", exit_status: 65) if bytes.bytesize > @max_bytes
+
+        bytes
       end
     end
   end

@@ -84,6 +84,19 @@ class BridgeArtifactStoreTest < Minitest::Test
     assert_equal "bridge.oversized_file", error.code
   end
 
+  def test_reader_does_not_expose_raw_parser_errors
+    malformed_path = @valid_path.dirname.join("malformed.json")
+    File.binwrite(malformed_path, '{"secret":"do-not-echo"')
+
+    error = assert_raises(Cyborg::InvalidArtifact) do
+      @store.read(path: malformed_path, expected_type: "analysis_result", expected_run_id: RUN_ID)
+    end
+
+    assert_equal "bridge.invalid_json", error.code
+    assert_equal "bridge.invalid_json", error.message
+    refute_includes error.message, "do-not-echo"
+  end
+
   def test_write_replaces_existing_artifact_atomically
     replacement = Cyborg::Bridge::Envelope.build(
       type: "analysis_result",
@@ -116,5 +129,82 @@ class BridgeArtifactStoreTest < Minitest::Test
     audit = JSON.parse(File.read(audit_path))
     assert_equal "old-run", audit.fetch("entries").first.fetch("run_id")
     refute_includes File.read(audit_path), "should-not-survive"
+  end
+
+  def test_cleanup_redacts_existing_audit_entries_before_reemitting_them
+    old_envelope = Cyborg::Bridge::Envelope.build(
+      type: "analysis_result", run_id: "audit-run", payload: {"ok" => true}, created_at: Time.utc(2026, 8, 12, 18)
+    )
+    @store.write(run_id: "audit-run", filename: "old.json", envelope: old_envelope)
+    audit_path = @root.join("audit-run", "artifact-audit.json")
+    File.write(audit_path, JSON.generate("entries" => [{"run_id" => "old", "stderr" => "secret stderr"}]))
+    File.chmod(0o600, audit_path)
+
+    @store.cleanup!(now: Time.utc(2026, 8, 12, 20), retention_seconds: 60)
+
+    audit = File.read(@root.join("audit-run", "artifact-audit.json"))
+    refute_includes audit, "secret stderr"
+    assert_includes audit, "[REDACTED]"
+  end
+
+  def test_cleanup_rejects_a_symlinked_audit_file
+    outside = Pathname(@tmpdir).join("outside-audit.json")
+    File.write(outside, JSON.generate("entries" => []))
+    audit_path = @valid_path.dirname.join("artifact-audit.json")
+    File.delete(audit_path) if File.exist?(audit_path)
+    File.symlink(outside, audit_path)
+    old_envelope = Cyborg::Bridge::Envelope.build(
+      type: "analysis_result", run_id: RUN_ID, payload: {"ok" => true}, created_at: Time.utc(2026, 8, 12, 18)
+    )
+    @store.write(run_id: RUN_ID, filename: "old.json", envelope: old_envelope)
+
+    error = assert_raises(Cyborg::UnsafeArtifact) do
+      @store.cleanup!(now: Time.utc(2026, 8, 12, 20), retention_seconds: 60)
+    end
+
+    assert_equal "bridge.unsafe_file", error.code
+  end
+
+  def test_cleanup_rejects_an_oversized_existing_audit_file_before_parsing
+    audit_path = @valid_path.dirname.join("artifact-audit.json")
+    File.binwrite(audit_path, "{" + ("x" * 4_096))
+    old_envelope = Cyborg::Bridge::Envelope.build(
+      type: "analysis_result", run_id: RUN_ID, payload: {"ok" => true}, created_at: Time.utc(2026, 8, 12, 18)
+    )
+    @store.write(run_id: RUN_ID, filename: "old.json", envelope: old_envelope)
+
+    error = assert_raises(Cyborg::UnsafeArtifact) do
+      @store.cleanup!(now: Time.utc(2026, 8, 12, 20), retention_seconds: 60)
+    end
+
+    assert_equal "bridge.oversized_file", error.code
+  end
+
+  def test_cleanup_rejects_oversized_payload_before_parsing
+    old_path = @valid_path.dirname.join("oversized-old.json")
+    File.binwrite(old_path, "{" + ("x" * 4_096))
+
+    error = assert_raises(Cyborg::UnsafeArtifact) do
+      @store.cleanup!(now: Time.utc(2026, 8, 12, 20), retention_seconds: 60)
+    end
+
+    assert_equal "bridge.oversized_file", error.code
+  end
+
+  def test_cleanup_validates_payload_fingerprint_before_deleting
+    old_envelope = Cyborg::Bridge::Envelope.build(
+      type: "analysis_result", run_id: RUN_ID, payload: {"ok" => true}, created_at: Time.utc(2026, 8, 12, 18)
+    )
+    old_path = @store.write(run_id: RUN_ID, filename: "tampered.json", envelope: old_envelope)
+    tampered = JSON.parse(File.read(old_path))
+    tampered["payload_sha256"] = "0" * 64
+    File.write(old_path, JSON.generate(tampered))
+
+    error = assert_raises(Cyborg::InvalidArtifact) do
+      @store.cleanup!(now: Time.utc(2026, 8, 12, 20), retention_seconds: 60)
+    end
+
+    assert_equal "bridge.payload_hash_mismatch", error.code
+    assert_path_exists old_path
   end
 end

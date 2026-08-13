@@ -21,6 +21,12 @@ class BridgeCanonicalJSONTest < Minitest::Test
     assert_equal "bridge.non_finite_number", error.code
   end
 
+  def test_canonical_dump_rejects_non_string_and_non_symbol_object_keys
+    error = assert_raises(Cyborg::InvalidArtifact) { CanonicalJSON.dump({1 => "not deterministic"}) }
+
+    assert_equal "bridge.invalid_json_key", error.code
+  end
+
   def test_sha256_is_the_digest_of_canonical_utf8_bytes
     value = {"message" => "café", "values" => [3, 2, 1]}
 
