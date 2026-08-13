@@ -49,7 +49,14 @@ module Cyborg
             candidate.source_name == request.fetch("source_name") &&
               candidate.account_identity.to_s == request["account_identity"].to_s
           end
-          unless snapshot && snapshot_terminal_for?(snapshot, response)
+          membership = snapshot && db[:source_snapshot_requests].where(
+            snapshot_id: snapshot.id, request_id: request.fetch("id")
+          ).first
+          raise UsageError.new("bridge.required_response_missing") unless membership
+          unless membership.fetch(:response_payload_sha256) == Bridge::CanonicalJSON.sha256(response_payload)
+            raise InvalidArtifact.new("bridge.changed_response", exit_status: 65)
+          end
+          unless snapshot_terminal_for?(snapshot, response)
             raise UsageError.new("bridge.required_response_missing")
           end
         end

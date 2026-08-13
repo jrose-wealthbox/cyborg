@@ -32,14 +32,10 @@ module Cyborg
             if File.exist?(existing_path)
               existing = load_envelope(store:, path: existing_path, expected_type: "retrieval_responses", run_id:)
               if Bridge::CanonicalJSON.dump(existing) != Bridge::CanonicalJSON.dump(response_payload)
-                store.record_validation_failure!(
-                  run_id:, code: "bridge.changed_response", command: "ingest", request_id:,
-                  submitted_payload_sha256: Bridge::CanonicalJSON.sha256(response_payload),
-                  existing_payload_sha256: Bridge::CanonicalJSON.sha256(existing), at: container.clock.now
-                )
+                record_changed_response!(store:, run_id:, request_id:, submitted: response_payload, existing:)
                 raise InvalidArtifact.new("bridge.changed_response", exit_status: 65)
               end
-              next
+              next if persisted_request_membership?(run_id:, request_id:, payload: response_payload)
             end
 
             previous = pending[request_id]
@@ -58,7 +54,13 @@ module Cyborg
             prior = persisted_group_responses(store:, run_id:, requests:, request: group.first.fetch(:request))
             values = prior + group.map { |item| item.fetch(:response) }
             result = aggregate_result(values, request_by_id)
-            SourceIngestor.new(db:).ingest(run:, registration:, result:)
+            memberships = values.map do |response|
+              {
+                request_id: response.fetch("request_id"),
+                payload_sha256: Bridge::CanonicalJSON.sha256("responses" => [response])
+              }
+            end.uniq { |membership| membership.fetch(:request_id) }
+            SourceIngestor.new(db:).ingest(run:, registration:, result:, request_memberships: memberships)
             group.each do |item|
               write_envelope(
                 store:, run_id:, filename: item.fetch(:filename), type: "retrieval_responses", payload: item.fetch(:payload)
@@ -94,6 +96,11 @@ module Cyborg
           submitted_payload_sha256: Bridge::CanonicalJSON.sha256(submitted),
           existing_payload_sha256: Bridge::CanonicalJSON.sha256(existing), at: container.clock.now
         )
+      end
+
+      def persisted_request_membership?(run_id:, request_id:, payload:)
+        digest = Bridge::CanonicalJSON.sha256(payload)
+        db[:source_snapshot_requests].where(run_id:, request_id:, response_payload_sha256: digest).first
       end
 
       def persisted_group_responses(store:, run_id:, requests:, request:)

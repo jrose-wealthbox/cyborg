@@ -191,6 +191,8 @@ class CyborgBridgeCLITest < Minitest::Test
     refute_includes File.read(audit_path), "page:2"
     packet = run_cli("analysis-packet", "--run", run_id, "--lease-file", handoff.fetch("lease_file"))
     assert_equal 0, packet[:status], packet[:stderr]
+    packet_document = JSON.parse(File.read(File.join(@artifacts, run_id, "analysis-packet.json")))
+    assert_equal 1, packet_document.fetch("payload").fetch("records").length
   end
 
   def test_sequential_host_batches_for_one_source_account_share_one_snapshot
@@ -203,10 +205,11 @@ class CyborgBridgeCLITest < Minitest::Test
         transport = "host_bridge"
         account = "me"
         required = true
-        capabilities = ["notifications", "mentions"]
+        capabilities = ["notifications", "mentions", "reviews"]
         [sources.github.operations]
         notifications = "github.notifications.read"
         mentions = "github.mentions.read"
+        reviews = "github.reviews.read"
       TOML
     end
 
@@ -215,18 +218,18 @@ class CyborgBridgeCLITest < Minitest::Test
     handoff = JSON.parse(prepared[:stdout])
     run_id = handoff.fetch("run_id")
     requests = JSON.parse(File.read(handoff.fetch("retrieval_requests"))).fetch("payload")
-    assert_equal 2, requests.length
+    assert_equal 3, requests.length
 
     responses = requests.each_with_index.map do |request, index|
       {
         "request_id" => request.fetch("id"), "status" => "healthy", "data_status" => "fresh",
         "started_at" => request.fetch("window_start_utc"), "completed_at" => request.fetch("window_end_utc"),
         "records" => [{
-          "source_record_id" => "batch-record-#{index + 1}", "record_kind" => "notification",
-          "title" => "Batch record #{index + 1}", "summary" => "A bounded batch record",
+          "source_record_id" => "shared-batch-record", "record_kind" => "notification",
+          "title" => index < 2 ? "Shared batch record" : "Conflicting batch record", "summary" => "A bounded batch record",
           "structured_fields" => {"batch" => index + 1}, "participants" => [], "owner_identity" => "me",
           "event_at" => request.fetch("window_end_utc"), "observed_at" => request.fetch("window_end_utc"),
-          "timestamp_kind" => "event_at", "content_fingerprint" => "batch-fp-#{index + 1}"
+          "timestamp_kind" => "event_at", "content_fingerprint" => index < 2 ? "shared-batch-fp" : "zz-conflicting-batch-fp"
         }], "next_cursor" => "capability:#{index + 1}"
       }
     end
@@ -239,9 +242,23 @@ class CyborgBridgeCLITest < Minitest::Test
     first = run_cli("ingest", "--run", run_id, "--lease-file", handoff.fetch("lease_file"), "--input", first_path)
     assert_equal 0, first[:status], first[:stderr]
 
+    forged_path = File.join(@artifacts, run_id, "retrieval-response-#{requests.fetch(1).fetch("id")}.json")
+    forged_envelope = Cyborg::Bridge::Envelope.build(
+      type: "retrieval_responses", run_id:, payload: {"responses" => [responses.fetch(1)]}, created_at: Time.now.utc
+    )
+    File.write(forged_path, Cyborg::Bridge::CanonicalJSON.dump(forged_envelope))
+    forged_third_path = File.join(@artifacts, run_id, "retrieval-response-#{requests.fetch(2).fetch("id")}.json")
+    forged_third_envelope = Cyborg::Bridge::Envelope.build(
+      type: "retrieval_responses", run_id:, payload: {"responses" => [responses.fetch(2)]}, created_at: Time.now.utc
+    )
+    File.write(forged_third_path, Cyborg::Bridge::CanonicalJSON.dump(forged_third_envelope))
+    blocked = run_cli("analysis-packet", "--run", run_id, "--lease-file", handoff.fetch("lease_file"))
+    assert_equal 64, blocked[:status]
+    assert_includes blocked[:stderr], "bridge.required_response_missing"
+
     second_path = File.join(@artifacts, run_id, "batch-two.json")
     second_envelope = Cyborg::Bridge::Envelope.build(
-      type: "retrieval_responses", run_id:, payload: {"responses" => [responses.fetch(1)]}, created_at: Time.now.utc
+      type: "retrieval_responses", run_id:, payload: {"responses" => responses.values_at(1, 2)}, created_at: Time.now.utc
     )
     File.write(second_path, Cyborg::Bridge::CanonicalJSON.dump(second_envelope))
     second = run_cli("ingest", "--run", run_id, "--lease-file", handoff.fetch("lease_file"), "--input", second_path)
@@ -250,9 +267,17 @@ class CyborgBridgeCLITest < Minitest::Test
     database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
     snapshot_count = database.get_first_value("SELECT COUNT(*) FROM source_snapshots WHERE run_id = ?", run_id)
     record_count = database.get_first_value("SELECT COUNT(*) FROM snapshot_records WHERE snapshot_id IN (SELECT id FROM source_snapshots WHERE run_id = ?)", run_id)
+    membership_count = database.get_first_value("SELECT COUNT(*) FROM source_snapshot_requests WHERE run_id = ?", run_id)
+    observed_record_count = database.get_first_value("SELECT COUNT(*) FROM observed_records WHERE source_name = 'github' AND account_identity = 'me'")
+    selected_title = database.get_first_value("SELECT title FROM observed_records WHERE source_name = 'github' AND account_identity = 'me'")
+    version_count = database.get_first_value("SELECT COUNT(*) FROM observed_record_versions")
     database.close
     assert_equal 1, snapshot_count
-    assert_equal 2, record_count
+    assert_equal 1, record_count
+    assert_equal 3, membership_count
+    assert_equal 1, observed_record_count
+    assert_equal "Conflicting batch record", selected_title
+    assert_equal 2, version_count
 
     duplicate = run_cli("ingest", "--run", run_id, "--lease-file", handoff.fetch("lease_file"), "--input", second_path)
     assert_equal 0, duplicate[:status], duplicate[:stderr]

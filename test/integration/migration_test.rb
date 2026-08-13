@@ -18,7 +18,7 @@ class CyborgMigrationTest < Minitest::Test
     first_tables = @db.tables.sort
     assert_equal true, @db.migrate!
     assert_equal first_tables, @db.tables.sort
-    assert_equal [4], @db[:schema_info].select_map(:version)
+    assert_equal [5], @db[:schema_info].select_map(:version)
   end
 
   def test_immediate_transaction_returns_block_value_and_rolls_back_on_error
