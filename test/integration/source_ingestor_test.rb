@@ -78,6 +78,47 @@ class CyborgSourceIngestorTest < Minitest::Test
     assert_equal 1, @db[:snapshot_records].count
   end
 
+  def test_partial_or_cached_results_hold_cursor_but_complete_fresh_result_advances
+    cases = [
+      ["degraded", "fresh", nil, "source.partial", "hold"],
+      ["degraded", "cached", "failure_fallback", "source.unavailable", "hold"],
+      ["healthy", "cached", "policy_hit", nil, "hold"],
+      ["healthy", "fresh", nil, nil, "advance"]
+    ]
+    cases.each_with_index do |(status, data_status, cache_reason, error_code, expected), index|
+      run = index.zero? ? @run : create_run("run-case-#{index}")
+      result = result_for("fresh", status:, data_status:, cache_reason:, error_code:)
+      snapshot = @ingestor.ingest(run:, registration: @source, result:)
+      assert_equal expected, snapshot.cursor_disposition
+    end
+  end
+
+  def test_blank_cursor_holds_even_for_healthy_fresh_result
+    result = result_for("fresh").with(next_cursor: "")
+
+    snapshot = @ingestor.ingest(run: @run, registration: @source, result:)
+
+    assert_equal "hold", snapshot.cursor_disposition
+  end
+
+  def test_allowed_fields_redact_source_content_from_version_and_evidence
+    registration = @source.with(allowed_fields: ["title", "repository", "evidence"])
+    restricted = record.with(
+      summary: "private summary",
+      structured_fields: {"repository" => "cyborg", "secret" => "do-not-store"},
+      evidence: [record.evidence.first.with(excerpt: "private excerpt", field_path: "secret")]
+    )
+
+    @ingestor.ingest(run: @run, registration:, result: result_for("fresh", records: [restricted]))
+
+    payload = JSON.parse(@db[:observed_record_versions].get(:payload_json))
+    refute payload.key?("summary")
+    assert_equal({"repository" => "cyborg"}, payload.fetch("structured_fields"))
+    refute_includes payload.to_json, "do-not-store"
+    refute_includes @db[:evidence].all.to_json, "private excerpt"
+    refute_includes @db[:evidence].all.to_json, "secret"
+  end
+
   private
 
   def create_run(id)
@@ -99,16 +140,20 @@ class CyborgSourceIngestorTest < Minitest::Test
     )
   end
 
-  def result_for(mode, records: [record])
-    status, data_status, cache_reason = case mode
+  def result_for(mode, records: [record], status: nil, data_status: nil, cache_reason: :__default__, error_code: :__default__)
+    default_status, default_data_status, default_cache_reason = case mode
     when "failed" then ["failed", "none", nil]
     when "cached" then ["healthy", "cached", "policy_hit"]
     else ["healthy", "fresh", nil]
     end
+    status ||= default_status
+    data_status ||= default_data_status
+    cache_reason = default_cache_reason if cache_reason == :__default__
+    error_code = mode == "failed" ? "github.api_unavailable" : nil if error_code == :__default__
     Cyborg::RetrievalResult.new(
       source_name: "github", account_identity: "me@example.com", status:, data_status:, cache_reason:,
       started_at: NOW, completed_at: LATER, records:, next_cursor: "cursor-2",
-      error: mode == "failed" ? Cyborg::RetrievalError.new(code: "github.api_unavailable", message: "unavailable", remediation: "retry") : nil
+      error: error_code && Cyborg::RetrievalError.new(code: error_code, message: "unavailable", remediation: "retry")
     )
   end
 end

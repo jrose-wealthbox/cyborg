@@ -25,9 +25,19 @@ module Cyborg
         db[:cache_entries].where(stage: attrs.fetch(:stage), cache_key: attrs.fetch(:cache_key)).first
       end
 
-      def invalidate(stage:, cache_key:, invalidated_at:, command:, run_id: nil, reason:)
+      def invalidate(classes: nil, stage: nil, cache_key: nil, invalidated_at:, command:, run_id: nil, reason:)
         validate_timestamp!(invalidated_at, field: :invalidated_at)
-        db[:cache_entries].where(stage:, cache_key:).update(
+        dataset = db[:cache_entries]
+        dataset = dataset.where(stage:) unless stage.nil?
+        dataset = dataset.where(cache_key:) unless cache_key.nil?
+        unless classes.nil?
+          values = Array(classes).map(&:to_s)
+          unless values.length.positive? && values.all? { |value| %w[ordinary expensive].include?(value) }
+            raise ArgumentError, "unsupported cache class selection"
+          end
+          dataset = dataset.where(cache_class: values.uniq)
+        end
+        dataset.update(
           invalidated_at:, invalidation_command: command, invalidation_run_id: run_id, invalidation_reason: reason
         )
         true

@@ -134,3 +134,87 @@ database uniqueness violation; callers should retry before commit or start a
 new run. Record/version ingestion itself is idempotent for exact normalized
 duplicates, and all snapshot/record/evidence writes remain transactionally
 rolled back together.
+
+## Fix round 1/5: cross-contract hardening
+
+Completed 2026-08-13T12:50:00Z from commit `1b85725`.
+
+### RED
+
+Added adversarial tests before the production changes. The focused runs showed
+the expected gaps:
+
+```text
+contracts: 7 runs, 45 assertions, 3 failures
+ingestor: 7 runs, 27 assertions, 2 failures
+cache policy: 5 runs, 5 assertions, 2 errors
+```
+
+The failures covered contradictory retrieval status/cache combinations,
+invalid retrieval limits, unchecked SourceHealth statuses, blank cursors that
+advanced, source fields leaking into versions/evidence, and the old
+single-key cache invalidation API.
+
+### GREEN
+
+RetrievalResult now enforces the approved truth table:
+
+| status | data status | cache reason | error | cursor |
+| --- | --- | --- | --- | --- |
+| healthy | fresh | none | none | eligible to advance when non-empty |
+| healthy | cached | policy_hit | none | hold |
+| degraded | fresh (partial) | none | required | hold |
+| degraded | cached | failure_fallback | required | hold |
+| failed | none | none | required | hold |
+
+Other combinations are rejected. The ingestor advances only a healthy,
+complete fresh result with a non-empty string cursor; partial, cached, failed,
+and blank-cursor results hold.
+
+RetrievalContext validates all configured limits as integers, rejects negative
+values, and requires positive values for pages, records, bytes, and seconds.
+SourceHealth accepts only healthy/degraded/failed/disabled; non-healthy values
+require an error code, healthy values cannot carry one, and checked timestamps
+are canonicalized.
+
+CachePolicy now requires a class selection and supports `ordinary`,
+`expensive`, explicit class sets, and `full`. CacheRepository filters real
+entries by class while retaining invalidation audit metadata. Ordinary
+invalidation leaves expensive entries valid; full invalidation marks both.
+
+Registration.allowed_fields is enforced at the ingestion boundary. Core
+identity/timestamp/fingerprint fields remain contract-owned, while source
+content and nested structured fields are whitelisted and optional evidence
+excerpt/field-path content is removed unless explicitly allowed. Forbidden
+source keys do not appear in record versions or evidence.
+
+Focused GREEN runs:
+
+```text
+bundle exec ruby -Itest test/unit/sources/contracts_test.rb
+7 runs, 55 assertions, 0 failures, 0 errors
+
+bundle exec ruby -Itest test/integration/source_ingestor_test.rb
+7 runs, 34 assertions, 0 failures, 0 errors
+
+bundle exec ruby -Itest test/integration/cache_policy_test.rb
+5 runs, 16 assertions, 0 failures, 0 errors
+```
+
+Full CYBORG:
+
+```text
+bundle exec rake test
+129 runs, 437 assertions, 0 failures, 0 errors, 0 skips
+```
+
+Motherbrain:
+
+```text
+ruby -w -Imotherbrain/test -e 'Dir["motherbrain/test/**/*_test.rb"].sort.each { |file| require_relative file }'
+31 runs, 124 assertions, 0 failures, 0 errors, 0 skips
+```
+
+The redirected full CYBORG run produced `0` stderr bytes. The truth-table
+choice is deliberate: the architecture explicitly permits degraded fresh
+partial data, but it must carry an error and never advance the cursor.

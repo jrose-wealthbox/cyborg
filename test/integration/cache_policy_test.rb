@@ -36,7 +36,7 @@ class CyborgCachePolicyTest < Minitest::Test
     repository.store(id: "cache-1", stage: "analysis", cache_key: "key", cache_class: "ordinary", input_fingerprint: "input", created_at: "2026-08-12T00:00:00Z", expires_at: "2026-08-13T00:00:00Z", payload: {"ok" => true})
     policy = Cyborg::CachePolicy.new(ordinary_ttl_seconds: 1_800, expensive_ttl_seconds: 14_400)
 
-    policy.invalidate(repository:, stage: "analysis", cache_key: "key", invalidated_at: "2026-08-12T00:01:00Z", command: "cyborg-no-cache", run_id: "run-1", reason: "user_requested")
+    policy.invalidate(repository:, classes: :ordinary, stage: "analysis", cache_key: "key", invalidated_at: "2026-08-12T00:01:00Z", command: "cyborg-no-cache", run_id: "run-1", reason: "user_requested")
 
     row = db[:cache_entries].first
     assert_equal "cache-1", row[:id]
@@ -46,6 +46,44 @@ class CyborgCachePolicyTest < Minitest::Test
   ensure
     db&.disconnect
     FileUtils.remove_entry(tmpdir) if tmpdir
+  end
+
+  def test_ordinary_and_full_invalidation_select_cache_classes
+    tmpdir = Dir.mktmpdir("cyborg-cache-classes")
+    db = Cyborg::Database.connect(path: File.join(tmpdir, "db.sqlite3"))
+    db.migrate!
+    repository = Cyborg::Repositories::CacheRepository.new(db)
+    %w[ordinary expensive].each do |cache_class|
+      repository.store(
+        id: "cache-#{cache_class}", stage: "analysis", cache_key: "key-#{cache_class}", cache_class:,
+        input_fingerprint: "input-#{cache_class}", created_at: "2026-08-12T00:00:00Z",
+        expires_at: "2026-08-13T00:00:00Z", payload: {cache_class:}
+      )
+    end
+    policy = Cyborg::CachePolicy.new(ordinary_ttl_seconds: 1_800, expensive_ttl_seconds: 14_400)
+
+    policy.invalidate(repository:, classes: :ordinary, invalidated_at: "2026-08-12T00:01:00Z", command: "cyborg-no-cache", reason: "user_requested")
+    assert_equal "2026-08-12T00:01:00Z", db[:cache_entries].where(cache_class: "ordinary").get(:invalidated_at)
+    assert_nil db[:cache_entries].where(cache_class: "expensive").get(:invalidated_at)
+
+    policy.invalidate(repository:, classes: :full, invalidated_at: "2026-08-12T00:02:00Z", command: "cyborg-no-cache-even-expensive", reason: "user_requested")
+    assert_equal "2026-08-12T00:02:00Z", db[:cache_entries].where(cache_class: "ordinary").get(:invalidated_at)
+    assert_equal "2026-08-12T00:02:00Z", db[:cache_entries].where(cache_class: "expensive").get(:invalidated_at)
+    assert_equal "cyborg-no-cache-even-expensive", db[:cache_entries].where(cache_class: "expensive").get(:invalidation_command)
+  ensure
+    db&.disconnect
+    FileUtils.remove_entry(tmpdir) if tmpdir
+  end
+
+  def test_invalidation_rejects_unknown_or_empty_class_selection
+    policy = Cyborg::CachePolicy.new(ordinary_ttl_seconds: 1_800, expensive_ttl_seconds: 14_400)
+
+    assert_raises(ArgumentError) do
+      policy.invalidate(repository: nil, classes: :unknown, invalidated_at: "2026-08-12T00:00:00Z", command: "x", reason: "user_requested")
+    end
+    assert_raises(ArgumentError) do
+      policy.invalidate(repository: nil, classes: [], invalidated_at: "2026-08-12T00:00:00Z", command: "x", reason: "user_requested")
+    end
   end
 
   private

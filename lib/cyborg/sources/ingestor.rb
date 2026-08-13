@@ -18,7 +18,7 @@ module Cyborg
       unless result.source_name.to_s == registration.source_name.to_s && result.account_identity.to_s == registration.account_identity.to_s
         raise ArgumentError, "retrieval result does not match source registration"
       end
-      disposition = result.status.to_s == "healthy" && result.data_status.to_s == "fresh" && !result.next_cursor.nil? ? "advance" : "hold"
+      disposition = result.complete_fresh? ? "advance" : "hold"
       baseline = @sources.baseline_for(registration.source_name, registration.account_identity)
 
       @db.transaction do
@@ -34,17 +34,10 @@ module Cyborg
     private
 
     def persist_record(snapshot, run, registration, record)
+      record = sanitize_record(record, registration)
       observed_at = record.observed_at || snapshot.completed_at || snapshot.started_at
       event_at = record.event_at || record.latest_reply_at || observed_at
-      payload = {
-        "source_record_id" => record.source_record_id, "record_kind" => record.record_kind,
-        "title" => record.title, "summary" => record.summary, "structured_fields" => record.structured_fields,
-        "participants" => record.participants, "owner_identity" => record.owner_identity,
-        "canonical_target_type" => record.canonical_target_type, "canonical_target_id" => record.canonical_target_id,
-        "deep_link" => record.deep_link, "event_at" => event_at, "latest_reply_at" => record.latest_reply_at,
-        "observed_at" => observed_at, "timestamp_kind" => record.timestamp_kind,
-        "content_fingerprint" => record.content_fingerprint
-      }
+      payload = payload_for(record, event_at, observed_at)
       existing = @db[:observed_records].where(source_name: registration.source_name, account_identity: registration.account_identity, source_record_id: record.source_record_id, record_kind: record.record_kind).first
       local_id = existing ? existing.fetch(:id) : SecureRandom.uuid
       observed = @records.create_or_update_record(
@@ -72,6 +65,55 @@ module Cyborg
           evidence_at: attrs.fetch(:evidence_at), relation: attrs.fetch(:relation, "context")
         )
       end
+    end
+
+    def sanitize_record(record, registration)
+      allowed = Array(registration.allowed_fields).map(&:to_s)
+      return record if allowed.empty?
+
+      structured_fields = record.structured_fields.each_with_object({}) do |(key, value), result|
+        result[key] = value if allowed.include?(key.to_s)
+      end
+      evidence = if allowed.include?("evidence")
+        record.evidence.map do |draft|
+          draft.with(
+            excerpt: allowed.include?("excerpt") ? draft.excerpt : nil,
+            field_path: allowed.include?("field_path") ? draft.field_path : nil
+          )
+        end
+      else
+        []
+      end
+      record.with(
+        title: allowed.include?("title") ? record.title : nil,
+        summary: allowed.include?("summary") ? record.summary : nil,
+        structured_fields: structured_fields,
+        participants: allowed.include?("participants") ? record.participants : [],
+        owner_identity: allowed.include?("owner_identity") ? record.owner_identity : nil,
+        canonical_target_type: allowed.include?("canonical_target_type") ? record.canonical_target_type : nil,
+        canonical_target_id: allowed.include?("canonical_target_id") ? record.canonical_target_id : nil,
+        deep_link: allowed.include?("deep_link") ? record.deep_link : nil,
+        evidence:
+      )
+    end
+
+    def payload_for(record, event_at, observed_at)
+      payload = {
+        "source_record_id" => record.source_record_id,
+        "record_kind" => record.record_kind,
+        "event_at" => event_at,
+        "latest_reply_at" => record.latest_reply_at,
+        "observed_at" => observed_at,
+        "timestamp_kind" => record.timestamp_kind,
+        "content_fingerprint" => record.content_fingerprint
+      }
+      {
+        "title" => record.title, "summary" => record.summary, "structured_fields" => record.structured_fields,
+        "participants" => record.participants, "owner_identity" => record.owner_identity,
+        "canonical_target_type" => record.canonical_target_type, "canonical_target_id" => record.canonical_target_id,
+        "deep_link" => record.deep_link
+      }.each { |key, value| payload[key] = value unless value.nil? }
+      payload
     end
   end
 end

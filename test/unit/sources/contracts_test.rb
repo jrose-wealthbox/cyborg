@@ -85,6 +85,67 @@ class CyborgSourceContractsTest < Minitest::Test
     end
   end
 
+  def test_retrieval_result_cross_validates_status_data_and_cache_reason
+    valid = [
+      ["healthy", "fresh", nil, nil],
+      ["healthy", "cached", "policy_hit", nil],
+      ["degraded", "fresh", nil, "source.partial"],
+      ["degraded", "cached", "failure_fallback", "source.unavailable"],
+      ["failed", "none", nil, "source.unavailable"]
+    ]
+    valid.each do |status, data_status, cache_reason, error_code|
+      result = retrieval_result(status:, data_status:, cache_reason:, error_code:)
+      assert_equal status, result.status
+    end
+
+    invalid = [
+      ["failed", "fresh", nil, "source.unavailable"],
+      ["healthy", "cached", "failure_fallback", nil],
+      ["degraded", "cached", "policy_hit", "source.partial"],
+      ["healthy", "fresh", "policy_hit", nil],
+      ["failed", "none", "failure_fallback", "source.unavailable"],
+      ["degraded", "fresh", nil, nil],
+      ["failed", "none", nil, nil]
+    ]
+    invalid.each do |status, data_status, cache_reason, error_code|
+      assert_raises(ArgumentError) do
+        retrieval_result(status:, data_status:, cache_reason:, error_code:)
+      end
+    end
+  end
+
+  def test_retrieval_context_rejects_invalid_or_zero_operation_limits
+    base = {
+      source_name: "fixture", account_identity: "test", window_start_utc: "2026-08-12T00:00:00Z",
+      window_end_utc: "2026-08-13T00:00:00Z", display_timezone: "UTC", cache_policy: "ordinary", filters: {}
+    }
+    assert_raises(ArgumentError) { Cyborg::RetrievalContext.new(**base, limits: {max_records: -1}) }
+    assert_raises(ArgumentError) { Cyborg::RetrievalContext.new(**base, limits: {max_pages: "many"}) }
+    assert_raises(ArgumentError) { Cyborg::RetrievalContext.new(**base, limits: {max_response_bytes: 0}) }
+  end
+
+  def test_source_health_validates_status_and_failure_metadata
+    %w[healthy degraded failed disabled].each do |status|
+      error_code = status == "healthy" ? nil : "source.#{status}"
+      health = Cyborg::SourceHealth.new(
+        source_name: "fixture", account_identity: "test", status:, code: error_code,
+        remediation: status == "healthy" ? nil : "retry", checked_at: "2026-08-12T00:00:00Z", message: nil
+      )
+      assert_equal status, health.status
+      assert_equal "2026-08-12T00:00:00Z", health.checked_at
+    end
+
+    assert_raises(ArgumentError) do
+      Cyborg::SourceHealth.new(source_name: "fixture", account_identity: "test", status: "unknown")
+    end
+    assert_raises(ArgumentError) do
+      Cyborg::SourceHealth.new(source_name: "fixture", account_identity: "test", status: "failed")
+    end
+    assert_raises(ArgumentError) do
+      Cyborg::SourceHealth.new(source_name: "fixture", account_identity: "test", status: "healthy", code: "source.ok")
+    end
+  end
+
   def test_loading_contracts_with_warnings_enabled_is_pristine
     _stdout, stderr, status = Open3.capture3(
       RbConfig.ruby, "-w", "-Ilib", "-e", 'require "cyborg/sources/contracts"'
@@ -92,5 +153,15 @@ class CyborgSourceContractsTest < Minitest::Test
 
     assert_predicate status, :success?
     assert_empty stderr
+  end
+
+  private
+
+  def retrieval_result(status:, data_status:, cache_reason:, error_code:)
+    Cyborg::RetrievalResult.new(
+      source_name: "fixture", account_identity: "test", status:, data_status:, cache_reason:,
+      started_at: "2026-08-12T00:00:00Z", completed_at: "2026-08-12T00:01:00Z", records: [],
+      next_cursor: "cursor-1", error: error_code && Cyborg::RetrievalError.new(code: error_code)
+    )
   end
 end

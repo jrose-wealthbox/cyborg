@@ -21,8 +21,26 @@ module Cyborg
       (timestamp.utc + ttl(cache_class)).iso8601
     end
 
-    def invalidate(repository:, stage:, cache_key:, invalidated_at:, command:, run_id: nil, reason:)
-      repository.invalidate(stage:, cache_key:, invalidated_at:, command:, run_id:, reason:)
+    def invalidate(repository:, classes:, invalidated_at:, command:, run_id: nil, reason:, stage: nil, cache_key: nil)
+      selected = normalize_classes(classes)
+      repository.invalidate(
+        classes: selected, stage:, cache_key:, invalidated_at:, command:, run_id:, reason:
+      )
+    end
+
+    private
+
+    def normalize_classes(classes)
+      values = case classes.to_s
+      when "full" then CACHE_CLASSES
+      when "ordinary", "expensive" then [classes.to_s]
+      else Array(classes).map(&:to_s)
+      end
+      values = CACHE_CLASSES if values.sort == CACHE_CLASSES.sort
+      unless values.length.positive? && values.all? { |value| CACHE_CLASSES.include?(value) }
+        raise ArgumentError, "unsupported cache class selection"
+      end
+      values.uniq
     end
   end
 end
