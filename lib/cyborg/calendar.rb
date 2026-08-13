@@ -11,6 +11,7 @@ module Cyborg
   # Deterministic business-day policy. Source adapters consume a TimeWindow;
   # they do not know about holidays or the user's weekend.
   class BusinessCalendar
+    MAX_SEARCH_DAYS = 3_660
     WEEKDAYS = {
       "sunday" => 0, "monday" => 1, "tuesday" => 2, "wednesday" => 3,
       "thursday" => 4, "friday" => 5, "saturday" => 6
@@ -70,7 +71,10 @@ module Cyborg
     def resolve_profile(profile)
       profile = profile.name if profile.respond_to?(:name)
       selected = @profiles[profile.to_s]
-      return selected if selected
+      if selected
+        validate_possible_business_day!(selected)
+        return selected
+      end
 
       raise InvalidConfiguration.new("config.unknown_profile")
     end
@@ -79,11 +83,34 @@ module Cyborg
       direction = amount.negative? ? -1 : 1
       remaining = amount.abs
       current = date
+      searched = 0
       while remaining.positive?
         current += direction
+        searched += 1
+        raise InvalidConfiguration.new("config.no_business_day") if searched > MAX_SEARCH_DAYS
         remaining -= 1 if business_day_for?(current, profile)
       end
       current
+    end
+
+    def validate_possible_business_day!(profile)
+      weekend_days = Array(profile.weekend_days).map(&:to_i).uniq
+      raise InvalidConfiguration.new("config.no_business_day") if weekend_days.length == 7
+
+      working_hours = profile.working_hours
+      return unless working_hours.is_a?(Hash) && !working_hours.key?("start") && !working_hours.key?("end")
+
+      possible = working_hours.any? do |day, interval|
+        interval && !weekend_days.include?(day_to_wday(day))
+      end
+      raise InvalidConfiguration.new("config.no_business_day") unless possible
+    end
+
+    def day_to_wday(day)
+      {
+        "sunday" => 0, "monday" => 1, "tuesday" => 2, "wednesday" => 3,
+        "thursday" => 4, "friday" => 5, "saturday" => 6
+      }.fetch(day.to_s.downcase) { day.to_i }
     end
 
     def business_day_for?(date, profile)

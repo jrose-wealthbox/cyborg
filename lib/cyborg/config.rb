@@ -37,6 +37,8 @@ module Cyborg
       new_years_day martin_luther_king_jr_day juneteenth independence_day labor_day
       thanksgiving christmas
     ].freeze
+    DEFAULT_WORKING_HOURS = {"start" => "09:00", "end" => "17:00"}.freeze
+    WEEKDAY_NAMES = %w[sunday monday tuesday wednesday thursday friday saturday].freeze
 
     KNOWN_ROOT_SECTIONS = %w[
       analysis budget cache calendar database defaults footer filters llm output
@@ -164,7 +166,7 @@ module Cyborg
       validate_timeout_consistency!
       validate_budget!
       @resolved_non_secret = deep_freeze(resolved_non_secret_hash)
-      @fingerprint = Bridge::CanonicalJSON.sha256(@resolved_non_secret)
+      @fingerprint = Bridge::CanonicalJSON.sha256(@resolved_non_secret).freeze
       deep_freeze_instance
     end
 
@@ -243,8 +245,12 @@ module Cyborg
 
     def build_profile(name, values, runtime)
       working_hours = values["working_hours"] || fetch_hash(@raw, "working_hours")
+      working_hours = normalize_working_hours(working_hours)
       weekend_days = values.key?("weekend_days") ? values["weekend_days"] : ["saturday", "sunday"]
       weekend_days = Array(weekend_days).map { |day| normalize_weekday(day) }
+      if weekend_days.uniq.length == 7
+        raise_invalid("config.no_business_day", "calendar profile has no possible business day")
+      end
       timezone = (values["timezone"] || runtime["timezone"] || DEFAULT_TIMEZONE).to_s
       begin
         TZInfo::Timezone.get(timezone)
@@ -294,6 +300,80 @@ module Cyborg
         integer(values["window_before_business_days"] || values.dig("window", "before_business_days") || 1, "config.invalid_window"),
         integer(values["window_after_business_days"] || values.dig("window", "after_business_days") || 1, "config.invalid_window")
       )
+    end
+
+    def normalize_working_hours(value)
+      value = DEFAULT_WORKING_HOURS if value.nil? || (value.is_a?(Hash) && value.empty?)
+      unless value.is_a?(Hash)
+        raise_invalid("config.invalid_working_hours", "working hours must be a table")
+      end
+
+      direct_interval = value.key?("start") || value.key?("end")
+      if direct_interval
+        unless value.key?("start") && value.key?("end")
+          raise_invalid("config.invalid_working_hours", "working hours require start and end")
+        end
+        return deep_freeze(normalize_working_interval(value))
+      end
+
+      result = {}
+      value.each do |day, interval|
+        weekday = normalize_weekday_name(day)
+        result[weekday] = if interval.nil? || interval == false
+          nil
+        else
+          normalize_working_interval(interval)
+        end
+      end
+      if result.empty? || result.values.none?
+        raise_invalid("config.no_business_day", "calendar profile has no working hours")
+      end
+      deep_freeze(result)
+    rescue InvalidConfiguration
+      raise
+    rescue StandardError
+      raise_invalid("config.invalid_working_hours", "working hours are malformed")
+    end
+
+    def normalize_working_interval(value)
+      start_value, end_value = case value
+      when Hash
+        [value["start"] || value[:start], value["end"] || value[:end]]
+      when Array
+        [value[0], value[1]]
+      when String
+        value.split(/\s*-\s*/, 2)
+      else
+        [nil, nil]
+      end
+      unless start_value && end_value
+        raise_invalid("config.invalid_working_hours", "working hours require start and end")
+      end
+
+      start_minutes = parse_working_time(start_value)
+      end_minutes = parse_working_time(end_value)
+      if start_minutes >= end_minutes
+        raise_invalid("config.invalid_working_hours", "working hours must be ordered")
+      end
+      {"start" => format_working_time(start_minutes), "end" => format_working_time(end_minutes)}
+    end
+
+    def parse_working_time(value)
+      text = value.to_s
+      match = /\A(?:([01]\d|2[0-3]):([0-5]\d)|(24):([0]{2}))\z/.match(text)
+      raise_invalid("config.invalid_working_hours", "working hours must use HH:MM") unless match
+      return 24 * 60 if match[3]
+
+      (match[1].to_i * 60) + match[2].to_i
+    end
+
+    def format_working_time(minutes)
+      format("%02d:%02d", minutes / 60, minutes % 60)
+    end
+
+    def normalize_weekday_name(day)
+      index = normalize_weekday(day)
+      WEEKDAY_NAMES.fetch(index)
     end
 
     def resolve_sources(raw)
@@ -436,19 +516,24 @@ module Cyborg
     end
 
     def resolved_non_secret_hash
-      {
+      resolved = @raw.each_with_object({}) { |(key, value), result| result[key] = value }
+      calendar = fetch_hash(resolved, "calendar")
+      calendar["default_profile"] = @profile_name
+      calendar["profiles"] = @profiles.transform_values { |profile| profile_to_h(profile) }
+      resolved.merge(
         "runtime" => @runtime,
         "paths" => @paths,
-        "profiles" => @profiles.transform_values { |profile| profile_to_h(profile) },
         "sources" => @sources.transform_values { |source| source_to_h(source) },
         "budget" => {"ceiling_micros" => @budget.ceiling_micros, "required_reservation_micros" => @budget.required_reservation_micros},
         "cache" => {"ordinary_ttl_seconds" => @cache.ordinary_ttl_seconds, "expensive_ttl_seconds" => @cache.expensive_ttl_seconds},
         "timeouts" => {"lease_timeout_seconds" => @timeouts.lease_timeout_seconds, "analysis_timeout_seconds" => @timeouts.analysis_timeout_seconds},
+        "calendar" => calendar,
         "analysis" => @analysis,
         "renderer" => @renderer,
         "output" => @output,
-        "footer" => @footer
-      }
+        "footer" => @footer,
+        "selected_profile" => @profile_name
+      )
     end
 
     def profile_to_h(profile)

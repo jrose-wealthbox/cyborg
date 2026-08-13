@@ -68,4 +68,21 @@ class CyborgCalendarTest < Minitest::Test
   ensure
     path&.close!
   end
+
+  def test_calendar_rejects_an_impossible_profile_instead_of_searching_forever
+    impossible = Data.define(
+      :name, :timezone, :working_hours, :weekend_days, :holidays, :observed,
+      :easter, :overrides, :holiday_additions, :holiday_removals,
+      :window_before_business_days, :window_after_business_days
+    ).new(
+      "impossible", "UTC", {"start" => "09:00", "end" => "17:00"},
+      (0..6).to_a, [], true, false, {}, [], [], 1, 1
+    )
+
+    calendar = Cyborg::BusinessCalendar.new(profiles: {"impossible" => impossible})
+    error = assert_raises(Cyborg::InvalidConfiguration) do
+      calendar.window(now: Time.utc(2026, 8, 10), profile: "impossible")
+    end
+    assert_equal "config.no_business_day", error.code
+  end
 end

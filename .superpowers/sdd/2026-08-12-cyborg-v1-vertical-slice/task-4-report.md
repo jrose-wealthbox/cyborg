@@ -86,3 +86,56 @@ Updated:
 
 - Easter is disabled by default in the profile fixture and enabled explicitly when desired; this follows the Task 4 “Easter opt-in” test requirement while keeping the policy configurable.
 - This task defines configuration and calendar primitives only. Source retrieval, budget execution, and run orchestration consume these values in later tasks.
+
+## Fix round 1/5
+
+### Findings addressed
+
+- Configuration fingerprints now include the complete non-secret TOML input plus every resolved/default policy value, including recognized `[llm]`, `[filters]`, `[database]`, `[tasks]`, and selected calendar profile values. Canonical JSON still sorts keys, and secret-shaped keys are rejected before resolution.
+- Fingerprint strings are explicitly frozen and cannot be mutated by callers.
+- Calendar profiles normalize and validate working-hour tables/intervals, requiring strict `HH:MM` ranges and ordered start/end values. Day-specific schedules are supported and must leave a possible working day.
+- Profiles with all seven weekend days are rejected as `config.no_business_day`; the calendar also validates externally supplied profiles and caps business-day search at 3,660 days as a defensive bound.
+
+### Fix-round RED evidence
+
+After adding the regression tests and before the fix implementation:
+
+```text
+$ bundle exec ruby -Itest test/unit/config_test.rb
+12 runs, 28 assertions, 4 failures, 0 errors, 0 skips
+```
+
+The failures were the expected omitted `[llm]` fingerprint input, mutable fingerprint, absent working-hours validation, and absent impossible-calendar validation.
+
+### Fix-round GREEN evidence
+
+Focused regression tests:
+
+```text
+$ bundle exec ruby -Itest test/unit/config_test.rb
+12 runs, 38 assertions, 0 failures, 0 errors, 0 skips
+
+$ bundle exec ruby -Itest test/unit/calendar_test.rb
+5 runs, 10 assertions, 0 failures, 0 errors, 0 skips
+```
+
+Full CYBORG suite:
+
+```text
+$ bundle exec rake test
+84 runs, 224 assertions, 0 failures, 0 errors, 0 skips
+```
+
+Motherbrain preservation suite:
+
+```text
+$ bundle exec ruby -I motherbrain/test -I motherbrain/lib \
+    -e 'ARGV.each { |path| load path }' -- $(rg --files motherbrain/test -g '*_test.rb' | sort)
+31 runs, 124 assertions, 0 failures, 0 errors, 0 skips
+```
+
+### Fix-round files
+
+- Updated `lib/cyborg/config.rb` and `lib/cyborg/calendar.rb`.
+- Updated `test/unit/config_test.rb` and `test/unit/calendar_test.rb`.
+- `git diff --check` and Ruby syntax checks are clean.
