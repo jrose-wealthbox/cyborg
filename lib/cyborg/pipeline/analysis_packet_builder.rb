@@ -39,10 +39,9 @@ module Cyborg
         @maximum_output_bytes = positive_integer(maximum_output_bytes, "maximum_output_bytes")
         @maximum_excerpt_bytes = positive_integer(maximum_excerpt_bytes, "maximum_excerpt_bytes")
         @maximum_field_bytes = positive_integer(maximum_field_bytes, "maximum_field_bytes")
-        @prompt_version = prompt_version.to_s
-        raise ArgumentError, "prompt_version is required" if @prompt_version.empty?
-
         @redactor = redactor || Cyborg::Redactor.new
+        @prompt_version = @redactor.call(prompt_version.to_s)
+        raise ArgumentError, "prompt_version is required" if @prompt_version.empty?
         @evidence_builder = evidence_builder || EvidenceBuilder.new(
           trusted_hosts:, maximum_excerpt_bytes:
         )
@@ -56,32 +55,32 @@ module Cyborg
       def call(run:, records:, actions:, tasks:, reservation:)
         records = Array(records)
         evidence_by_record = records.each_with_object({}) do |record, result|
-          result[Support.source_record_id(record)] = @evidence_builder.call(record)
+          result[record_identity(record)] = @evidence_builder.call(record)
         end
         groups = @group_candidates.call(records).map { |group| sanitize_value(group) }
-        packet_records = records.map do |record|
-          record_payload(record, evidence_by_record.fetch(Support.source_record_id(record), []))
+        packet_records = records.sort_by { |record| record_identity(record) }.map do |record|
+          record_payload(record, evidence_by_record.fetch(record_identity(record), []))
         end
 
         configuration_version = run_value(run, :configuration_fingerprint, "")
         run_id = run_value(run, :id, "")
         payload = {
           "packet_version" => VERSION,
-          "run_id" => run_id.to_s,
+          "run_id" => bounded(run_id),
           "prompt_version" => @prompt_version,
-          "configuration_version" => configuration_version.to_s,
+          "configuration_version" => bounded(configuration_version),
           "versions" => {
             "packet" => VERSION,
             "prompt" => @prompt_version,
-            "configuration" => configuration_version.to_s,
+            "configuration" => bounded(configuration_version),
             "task" => "1.0"
           },
           "allowed_action_kinds" => @allowed_action_kinds,
           "records" => packet_records,
-          "existing_actions" => Array(actions).map { |action| action_payload(action) },
-          "group_candidates" => groups,
+          "existing_actions" => Array(actions).map { |action| action_payload(action) }.sort_by { |action| action.fetch("current_subject_key") },
+          "group_candidates" => groups.sort_by { |group| group.fetch("group_id") },
           "unresolved_questions" => groups.flat_map { |group| Array(group["unresolved_questions"]) }.uniq,
-          "tasks" => Array(tasks).map { |task| task_payload(task) },
+          "tasks" => Array(tasks).map { |task| task_payload(task) }.sort_by { |task| task.fetch("id") },
           "reservation" => sanitize_value(reservation),
           "maximum_claim_count" => @maximum_claim_count,
           "maximum_output_bytes" => @maximum_output_bytes,
@@ -107,10 +106,10 @@ module Cyborg
         fields = @redactor.call(Support.structured_fields(record))
         deep_link = evidence.map { |item| item["source_url"] }.compact.first
         {
-          "source_record_id" => Support.source_record_id(record),
-          "source_name" => Support.source_name(record),
-          "account_identity" => Support.account_identity(record),
-          "record_kind" => Support.record_kind(record),
+          "source_record_id" => bounded(Support.source_record_id(record)),
+          "source_name" => bounded(Support.source_name(record)),
+          "account_identity" => bounded(Support.account_identity(record)),
+          "record_kind" => bounded(Support.record_kind(record)),
           "title" => bounded(Support.value(record, :title)),
           "summary" => bounded(Support.value(record, :summary)),
           "structured_fields" => sanitize_value(fields),
@@ -124,17 +123,20 @@ module Cyborg
           "observed_at" => Support.canonical_time(Support.value(record, :observed_at)),
           "timestamp_kind" => bounded(Support.value(record, :timestamp_kind), 128),
           "content_fingerprint" => bounded(Support.value(record, :content_fingerprint), 128),
-          "evidence_ids" => evidence.map { |item| item.fetch("evidence_id") },
-          "evidence" => evidence
+          "evidence_ids" => evidence.map { |item| item.fetch("evidence_id") }.sort,
+          "evidence" => evidence.sort_by { |item| item.fetch("evidence_id") }
         }
       end
 
       def action_payload(action)
         value = sanitize_value(action)
-        value = {} unless value.is_a?(Hash)
-        # Keep the state fields explicit even when a repository returns a
-        # narrow value object.  Unknown metadata remains available but is
-        # redacted and bounded by sanitize_value.
+        raise ArgumentError, "action row must be a hash" unless value.is_a?(Hash)
+        required = %w[current_subject_key user_state inference_status state_version]
+        missing = required.reject { |field| value.key?(field) && !value[field].nil? }
+        raise ArgumentError, "action row missing #{missing.join(", ")}" unless missing.empty?
+        unless value.fetch("state_version").is_a?(Integer) && value.fetch("state_version") >= 0
+          raise ArgumentError, "action row state_version must be a non-negative integer"
+        end
         value
       end
 
@@ -147,6 +149,15 @@ module Cyborg
 
       def run_value(run, field, default = nil)
         Support.value(run, field, default)
+      end
+
+      def record_identity(record)
+        Bridge::CanonicalJSON.dump(
+          "source_name" => Support.source_name(record),
+          "account_identity" => Support.account_identity(record),
+          "source_record_id" => Support.source_record_id(record),
+          "record_kind" => Support.record_kind(record)
+        )
       end
 
       def sanitize_value(value)

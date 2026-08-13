@@ -14,8 +14,11 @@ module Cyborg
           @key, @representative, @records, @content_fingerprint = key, representative, records.freeze, content_fingerprint
           freeze
         end
-        def source_record_ids = @records.map { |r| Support.source_record_id(r) }
-        def evidence = @records.flat_map { |r| Array(Support.value(r, :evidence, [])) }
+        def source_record_ids = @records.map { |r| Support.source_record_id(r) }.sort
+        def evidence
+          @records.flat_map { |r| Array(Support.value(r, :evidence, [])) }
+            .sort_by { |item| Bridge::CanonicalJSON.dump(Support.as_hash(item)) }
+        end
         def fetch(name, *args) = to_h.fetch(name, *args)
         def [](name) = to_h[name.to_s] || to_h[name.to_sym]
         def to_h = {"group_id" => "group-#{key}", "key" => key, "representative" => representative, "records" => records, "source_record_ids" => source_record_ids, "content_fingerprint" => content_fingerprint, "evidence" => evidence}
@@ -31,7 +34,11 @@ module Cyborg
           groups[key] ||= {representative: record, records: [], fingerprint: fingerprint}
           groups[key][:records] << record
         end
-        groups.sort_by { |key, _| key }.map { |key, data| Group.new(key:, representative: data[:representative], records: data[:records], content_fingerprint: data[:fingerprint]) }
+        groups.sort_by { |key, _| key }.map do |key, data|
+          members = data[:records].sort_by { |record| record_identity(record) }
+          representative = members.min_by { |record| record_identity(record) }
+          Group.new(key:, representative:, records: members, content_fingerprint: data[:fingerprint])
+        end
       end
 
       private
@@ -44,6 +51,18 @@ module Cyborg
           "owner_identity" => Support.value(record, :owner_identity), "canonical_target_type" => Support.value(record, :canonical_target_type),
           "canonical_target_id" => Support.value(record, :canonical_target_id), "deep_link" => Support.value(record, :deep_link),
           "event_at" => Support.value(record, :event_at), "latest_reply_at" => Support.value(record, :latest_reply_at)
+        )
+      end
+
+      def record_identity(record)
+        Bridge::CanonicalJSON.dump(
+          "source_name" => Support.source_name(record),
+          "account_identity" => Support.account_identity(record),
+          "source_record_id" => Support.source_record_id(record),
+          "record_kind" => Support.record_kind(record),
+          "content_fingerprint" => fingerprint_for(record),
+          "canonical_target_type" => Support.value(record, :canonical_target_type),
+          "canonical_target_id" => Support.value(record, :canonical_target_id)
         )
       end
     end

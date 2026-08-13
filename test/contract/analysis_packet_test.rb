@@ -40,6 +40,50 @@ class CyborgAnalysisPacketContractTest < Minitest::Test
     assert_equal %w[one two], packet.fetch("group_candidates").first.fetch("source_record_ids")
   end
 
+  def test_packet_rejects_credential_shaped_values_everywhere
+    hostile = record("ghp_12345678901234567890")
+    hostile = hostile.with(
+      source_record_id: "safe-ghp_12345678901234567890",
+      owner_identity: "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+      canonical_target_id: "target-ghp_12345678901234567890",
+      deep_link: "https://github.example/ghp_12345678901234567890"
+    )
+    packet = @builder.call(run: @run, records: [hostile], actions: [action], tasks: [task], reservation: @reservation)
+
+    refute_match(/ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}/, Cyborg::Bridge::CanonicalJSON.dump(packet))
+  end
+
+  def test_packet_is_canonical_for_reordered_inputs
+    records = [record("two"), record("one")]
+    actions = [action.merge("id" => "action-2", "current_subject_key" => "subject-2"), action]
+    tasks = [task.merge("id" => "task-2"), task]
+    first = @builder.call(run: @run, records: records, actions: actions, tasks: tasks, reservation: @reservation)
+    second = @builder.call(run: @run, records: records.reverse, actions: actions.reverse, tasks: tasks.reverse, reservation: @reservation)
+
+    assert_equal Cyborg::Bridge::CanonicalJSON.dump(first), Cyborg::Bridge::CanonicalJSON.dump(second)
+  end
+
+  def test_packet_rejects_malformed_action_rows
+    error = assert_raises(ArgumentError) do
+      @builder.call(run: @run, records: [], actions: [{"id" => "missing-state"}], tasks: [], reservation: @reservation)
+    end
+
+    assert_match(/action/, error.message)
+  end
+
+  def test_evidence_ids_survive_reordering_and_insertion
+    evidence_one = Cyborg::EvidenceDraft.new(source_url: "https://github.example/a", source_label: "GitHub", excerpt: "one", field_path: "body", evidence_at: "2026-08-12T12:00:00Z", relation: "supports")
+    evidence_two = Cyborg::EvidenceDraft.new(source_url: "https://github.example/b", source_label: "GitHub", excerpt: "two", field_path: "body", evidence_at: "2026-08-12T12:00:00Z", relation: "supports")
+    base = record("stable").with(evidence: [evidence_one, evidence_two])
+    inserted = base.with(evidence: [evidence_two, evidence_one, evidence_one.with(relation: "context")])
+    builder = Cyborg::Pipeline::EvidenceBuilder.new(trusted_hosts: ["github.example"])
+
+    ids = builder.call(base).select { |row| row.fetch("relation") == "supports" }.to_h { |row| [row.fetch("excerpt"), row.fetch("evidence_id")] }
+    reordered_ids = builder.call(inserted).select { |row| row.fetch("relation") == "supports" }.to_h { |row| [row.fetch("excerpt"), row.fetch("evidence_id")] }
+    assert_equal ids.fetch("one"), reordered_ids.fetch("one")
+    assert_equal ids.fetch("two"), reordered_ids.fetch("two")
+  end
+
   private
 
   def record(id)

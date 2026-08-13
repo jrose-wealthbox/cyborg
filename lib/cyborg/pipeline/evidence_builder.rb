@@ -40,10 +40,10 @@ module Cyborg
         # preferred over a draft URL because drafts may carry source text or a
         # mutable URL supplied by an adapter.
         record_url = trusted_url(Support.value(record, :deep_link))
-        source_record_id = Support.source_record_id(record)
+        source_record_id = redact_and_bound(Support.source_record_id(record), 512)
         record_kind = Support.record_kind(record)
 
-        drafts.first(@maximum_evidence).each_with_index.filter_map do |draft, index|
+        drafts.first(@maximum_evidence).filter_map do |draft|
           draft_hash = Support.as_hash(draft)
           draft_url = trusted_url(Support.hash_value(draft_hash, :source_url))
           source_url = record_url || draft_url
@@ -60,7 +60,6 @@ module Cyborg
           identity = {
             "source_record_id" => source_record_id,
             "record_kind" => record_kind,
-            "index" => index,
             "source_url" => source_url,
             "source_label" => source_label,
             "excerpt" => excerpt,
@@ -94,6 +93,11 @@ module Cyborg
 
         host = uri.host.to_s.downcase
         return nil if host.empty? || !@trusted_hosts.include?(host)
+
+        # A trusted host does not make a credential-bearing path safe.
+        # Reject rather than redact URLs so no ambiguous link crosses the
+        # boundary and callers cannot accidentally follow a modified URL.
+        return nil unless @redactor.call(uri.to_s) == uri.to_s
 
         uri.to_s
       rescue URI::InvalidURIError

@@ -21,6 +21,16 @@ class CyborgPipelineDeduplicatorTest < Minitest::Test
     assert_equal %w[a b], result.map { |item| item.fetch("source_record_ids").first }
   end
 
+  def test_group_members_and_representative_are_canonical_for_input_order
+    records = [record("b"), record("a")]
+    first = Cyborg::Pipeline::Deduplicator.new.call(records).first
+    second = Cyborg::Pipeline::Deduplicator.new.call(records.reverse).first
+
+    assert_equal %w[a b], first.fetch("source_record_ids")
+    assert_equal first.fetch("source_record_ids"), second.fetch("source_record_ids")
+    assert_equal first.representative.source_record_id, second.representative.source_record_id
+  end
+
   private
 
   def record(id, fingerprint: "same-fingerprint")
