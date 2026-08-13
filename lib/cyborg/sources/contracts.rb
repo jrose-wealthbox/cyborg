@@ -43,13 +43,13 @@ module Cyborg
       raise ArgumentError, "source limits must be a hash" unless limits.is_a?(Hash)
 
       limits.each do |key, value|
-        integer = Integer(value)
-        raise ArgumentError, "source limits must be non-negative integers" if integer.negative?
-        if %w[max_pages max_records max_response_bytes max_bytes max_seconds].include?(key.to_s) && integer.zero?
+        unless value.is_a?(Integer)
+          raise ArgumentError, "source limits must be non-negative integers"
+        end
+        raise ArgumentError, "source limits must be non-negative integers" if value.negative?
+        if %w[max_pages max_records max_response_bytes max_bytes max_seconds].include?(key.to_s) && value.zero?
           raise ArgumentError, "source limits must be positive for bounded retrieval"
         end
-      rescue ArgumentError, TypeError
-        raise ArgumentError, "source limits must be non-negative integers"
       end
       limits
     end

@@ -218,3 +218,54 @@ ruby -w -Imotherbrain/test -e 'Dir["motherbrain/test/**/*_test.rb"].sort.each { 
 The redirected full CYBORG run produced `0` stderr bytes. The truth-table
 choice is deliberate: the architecture explicitly permits degraded fresh
 partial data, but it must carry an error and never advance the cursor.
+
+## Fix round 2/5: strict integer retrieval limits
+
+Completed 2026-08-13T12:59:34Z from the Task 6 follow-up review.
+
+### RED
+
+Added a focused contract regression for `RetrievalContext` limits. Before the
+production change, the focused contracts suite failed because `Integer(value)`
+accepted numeric strings and truncated fractional values instead of rejecting
+them:
+
+```text
+8 runs, 56 assertions, 1 failure, 0 errors, 0 skips
+ArgumentError expected but nothing was raised
+```
+
+The regression covers fractional page and record limits, a numeric-string byte
+limit, and a valid `Integer` limit that must remain accepted.
+
+### GREEN
+
+`SourceContracts.validate_limits` now requires each configured limit to already
+be an `Integer` before applying non-negative and positive-bound checks. This
+keeps valid integer limits unchanged while rejecting values such as `1.5`,
+`2.9`, and `"4096"` at the `RetrievalContext` contract boundary rather than
+coercing them.
+
+Focused Task 6 verification:
+
+```text
+contracts: 8 runs, 59 assertions, 0 failures, 0 errors, 0 skips
+ingestor: 7 runs, 34 assertions, 0 failures, 0 errors, 0 skips
+cache policy: 5 runs, 16 assertions, 0 failures, 0 errors, 0 skips
+```
+
+Full CYBORG:
+
+```text
+bundle exec rake test
+130 runs, 441 assertions, 0 failures, 0 errors, 0 skips
+```
+
+Motherbrain preservation:
+
+```text
+ruby -w -Imotherbrain/test -e 'Dir["motherbrain/test/**/*_test.rb"].sort.each { |file| require_relative file }'
+31 runs, 124 assertions, 0 failures, 0 errors, 0 skips
+```
+
+The redirected full CYBORG run produced `0` stderr bytes.

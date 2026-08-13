@@ -124,6 +124,18 @@ class CyborgSourceContractsTest < Minitest::Test
     assert_raises(ArgumentError) { Cyborg::RetrievalContext.new(**base, limits: {max_response_bytes: 0}) }
   end
 
+  def test_retrieval_context_requires_actual_integer_limits
+    base = {
+      source_name: "fixture", account_identity: "test", window_start_utc: "2026-08-12T00:00:00Z",
+      window_end_utc: "2026-08-13T00:00:00Z", display_timezone: "UTC", cache_policy: "ordinary", filters: {}
+    }
+
+    assert_raises(ArgumentError) { Cyborg::RetrievalContext.new(**base, limits: {max_pages: 1.5}) }
+    assert_raises(ArgumentError) { Cyborg::RetrievalContext.new(**base, limits: {max_records: 2.9}) }
+    assert_raises(ArgumentError) { Cyborg::RetrievalContext.new(**base, limits: {max_bytes: "4096"}) }
+    assert_equal 3, Cyborg::RetrievalContext.new(**base, limits: {max_pages: 3}).max_pages
+  end
+
   def test_source_health_validates_status_and_failure_metadata
     %w[healthy degraded failed disabled].each do |status|
       error_code = status == "healthy" ? nil : "source.#{status}"
