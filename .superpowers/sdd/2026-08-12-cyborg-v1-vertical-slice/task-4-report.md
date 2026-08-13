@@ -1,0 +1,88 @@
+# Task 4 report: Configuration, Paths, and Business Calendar
+
+Date: 2026-08-13
+Base commit: `a092051bbebbb55c65159f6c9791ff47aaf99c58`
+
+## Implementation
+
+- Added immutable `Cyborg::Config` loading from TOML with explicit path, `CYBORG_CONFIG`, and `~/.config/cyborg/config.toml` precedence.
+- Added recursive secret-shaped-key rejection (`config.secret_forbidden`), unknown-section and enum validation, required repository-root checks, source limits, timeout consistency, and required reservation budget checks.
+- Added typed immutable profile, source, budget, cache, and timeout values. The resolved non-secret configuration is canonicalized with `Bridge::CanonicalJSON` for a stable SHA-256 fingerprint.
+- Added `Cyborg::Paths.resolve` with `CYBORG_STATE_DIR` and per-path environment overrides, configured paths, and the macOS default `~/Library/Application Support/CYBORG/` state layout.
+- Added `Cyborg::BusinessCalendar` and immutable `TimeWindow` values. Windows use the configured TZInfo timezone, DST-safe local midnights, configurable weekends, US holiday profiles, observed fixed-date holidays, additions/removals, date overrides, and opt-in Easter/Good Friday handling.
+- Added `config/example.toml` and deterministic configuration fixtures/tests. Calendar policy remains outside source adapters.
+
+## TDD evidence
+
+### RED
+
+After adding the initial focused tests and before creating the Task 4 production files, the required command failed because the new configuration boundary was absent:
+
+```text
+$ bundle exec ruby -Itest test/unit/config_test.rb
+LoadError: cannot load such file -- .../lib/cyborg/config
+```
+
+### GREEN
+
+Focused tests:
+
+```text
+$ bundle exec ruby -Itest test/unit/config_test.rb
+6 runs, 21 assertions, 0 failures, 0 errors, 0 skips
+
+$ bundle exec ruby -Itest test/unit/paths_test.rb
+2 runs, 7 assertions, 0 failures, 0 errors, 0 skips
+
+$ bundle exec ruby -Itest test/unit/calendar_test.rb
+4 runs, 8 assertions, 0 failures, 0 errors, 0 skips
+```
+
+Full CYBORG suite:
+
+```text
+$ bundle exec rake test
+77 runs, 205 assertions, 0 failures, 0 errors, 0 skips
+```
+
+Motherbrain preservation suite:
+
+```text
+$ bundle exec ruby -I motherbrain/test -I motherbrain/lib \
+    -e 'ARGV.each { |path| load path }' -- $(rg --files motherbrain/test -g '*_test.rb' | sort)
+31 runs, 124 assertions, 0 failures, 0 errors, 0 skips
+```
+
+## Files
+
+Created:
+
+- `config/example.toml`
+- `lib/cyborg/config.rb`
+- `lib/cyborg/paths.rb`
+- `lib/cyborg/calendar.rb`
+- `test/unit/config_test.rb`
+- `test/unit/paths_test.rb`
+- `test/unit/calendar_test.rb`
+- `test/fixtures/config/minimal.toml`
+- `test/fixtures/config/invalid-secret.toml`
+- `.superpowers/sdd/2026-08-12-cyborg-v1-vertical-slice/task-4-report.md`
+
+Updated:
+
+- `lib/cyborg.rb`
+- `lib/cyborg/errors.rb`
+- `test/test_helper.rb`
+
+## Self-review
+
+- Focused tests use temporary TOML paths and hand-derived UTC literals for normal, DST-transition, holiday, observed-date, override, and Easter cases.
+- Config fingerprints exclude the source file path and secrets while including all resolved non-secret defaults and policy values; the returned hash and typed values are deeply frozen.
+- State-directory overrides derive all default child paths from the overridden state root; explicit per-path environment values still win.
+- Required repository roots are checked only when marked/treated as required, and disabled source discovery does not grant implicit access.
+- `git diff --check` is clean.
+
+## Concerns
+
+- Easter is disabled by default in the profile fixture and enabled explicitly when desired; this follows the Task 4 “Easter opt-in” test requirement while keeping the policy configurable.
+- This task defines configuration and calendar primitives only. Source retrieval, budget execution, and run orchestration consume these values in later tasks.

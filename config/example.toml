@@ -1,0 +1,32 @@
+# CYBORG configuration contains behavior and identifiers only. Do not put
+# passwords, API keys, access tokens, or other credentials in this file.
+
+[runtime]
+profile = "default"
+timezone = "America/New_York"
+lease_timeout_seconds = 600
+analysis_timeout_seconds = 300
+
+[budget]
+ceiling_micros = 5000000
+
+[cache]
+ordinary_ttl_seconds = 1800
+expensive_ttl_seconds = 14400
+
+[calendar.profiles.default]
+timezone = "America/New_York"
+weekend_days = ["saturday", "sunday"]
+observed = true
+easter = false
+
+# [sources.github]
+# enabled = true
+# adapter = "github"
+# account = "example"
+# [sources.github.limits]
+# max_records = 500
+# max_pages = 10
+
+[paths]
+# state_dir = "~/Library/Application Support/CYBORG"

@@ -45,5 +45,12 @@ module Cyborg
     DEFAULT_EXIT_STATUS = 78
   end
 
+  # Raised when the resolved TOML configuration cannot be safely used.
+  # Keep this distinct from a generic configuration failure so callers can
+  # report a stable, machine-readable validation code.
+  class InvalidConfiguration < ConfigurationError
+    DEFAULT_EXIT_STATUS = 78
+  end
+
   ConfigError = ConfigurationError
 end

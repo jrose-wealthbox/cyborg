@@ -1,0 +1,20 @@
+[runtime]
+profile = "default"
+timezone = "America/New_York"
+lease_timeout_seconds = 600
+analysis_timeout_seconds = 300
+
+[budget]
+ceiling_micros = 5000000
+
+[cache]
+ordinary_ttl_seconds = 1800
+expensive_ttl_seconds = 14400
+
+[calendar.profiles.default]
+timezone = "America/New_York"
+weekend_days = ["saturday", "sunday"]
+easter = false
+
+[paths]
+state_dir = "/tmp/cyborg-task-4-state"
