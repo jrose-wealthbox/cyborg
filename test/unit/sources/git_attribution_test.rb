@@ -48,6 +48,17 @@ class CyborgGitAttributionTest < Minitest::Test
     assert_equal "detached", @attribution.branch_for(commit: unpublished, repository: @repo)
   end
 
+  def test_truncated_branch_output_is_unclassified
+    runner = Class.new do
+      def capture(**)
+        Cyborg::ProcessResult.new(stdout: ("feature/current\0" * 10_000), stderr: "", status: 0, timed_out: false, truncated: true)
+      end
+    end.new
+
+    attribution = Cyborg::GitAttribution.new(runner:, timeout: 2)
+    assert_equal "detached", attribution.branch_for(commit: @commit, repository: @repo)
+  end
+
   private
 
   def run_git(*args)

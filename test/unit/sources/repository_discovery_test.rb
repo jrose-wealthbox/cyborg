@@ -33,6 +33,35 @@ class CyborgRepositoryDiscoveryTest < Minitest::Test
     assert_equal [@outside], @discovery.call(roots: [], explicit_paths: [@outside], max_depth: 0, max_repositories: 1)
   end
 
+  def test_rejects_gitdir_symlink_escaping_scan_root
+    escaped = @root.join("escaped")
+    FileUtils.mkdir_p(escaped)
+    File.symlink(@outside.join(".git").to_s, escaped.join(".git").to_s)
+
+    repositories = @discovery.call(roots: [@root], explicit_paths: [], max_depth: 2, max_repositories: 10)
+
+    refute_includes repositories, escaped
+  end
+
+  def test_rejects_git_file_indirection_escaping_scan_root
+    escaped = @root.join("indirected")
+    FileUtils.mkdir_p(escaped)
+    File.write(escaped.join(".git"), "gitdir: #{@outside.join(".git")}\n")
+
+    repositories = @discovery.call(roots: [@root], explicit_paths: [], max_depth: 2, max_repositories: 10)
+
+    refute_includes repositories, escaped
+  end
+
+  def test_accepts_legitimate_worktree_under_an_explicit_root
+    worktree = @root.join("worktree")
+    run_git(@repo_a, "worktree", "add", "--quiet", "-b", "fixture-worktree", worktree.to_s)
+
+    repositories = @discovery.call(roots: [@root], explicit_paths: [], max_depth: 2, max_repositories: 10)
+
+    assert_includes repositories, worktree
+  end
+
   private
 
   def init_repo(path)

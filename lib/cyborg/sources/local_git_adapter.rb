@@ -91,9 +91,10 @@ module Cyborg
         remaining = max_records - records.length
         partial ||= commits.length > remaining
         commits.first(remaining).each do |commit|
-          next if seen_commits[commit.fetch(:id)]
+          dedupe_key = [repository_identity_for(repository), commit.fetch(:id)]
+          next if seen_commits[dedupe_key]
 
-          seen_commits[commit.fetch(:id)] = true
+          seen_commits[dedupe_key] = true
           stats, stats_ok = stats_for(repository, commit.fetch(:id), timeout:, max_bytes:)
           partial ||= !stats_ok
           branch = @attribution.branch_for(commit: commit.fetch(:id), repository:, primary_branch:)
@@ -120,8 +121,6 @@ module Cyborg
     def commits_for(repository:, context:, timeout:, max_bytes:, emails:, signing_identities:)
       argv = [
         @git, "-C", repository.to_s, "log", "--all", "--no-color", "--no-decorate", "--no-patch",
-        "--since=#{timestamp_text(context_value(context, :window_start_utc))}",
-        "--until=#{timestamp_text(context_value(context, :window_end_utc))}",
         "--format=%H%x00%aI%x00%ae%x00%GS%x00%GK%x00%GF%x00%cI%x00%s%x00"
       ]
       response = capture(argv, timeout:, max_bytes:)
@@ -146,6 +145,12 @@ module Cyborg
     end
 
     def stats_for(repository, commit, timeout:, max_bytes:)
+      status_response = capture([
+        @git, "-C", repository.to_s, "diff-tree", "--no-commit-id", "--root", "-r", "--name-status", "-M", "-z", commit
+      ], timeout:, max_bytes:)
+      return [{additions: 0, deletions: 0, binary_files: 0, rename_only_files: 0, files_changed: 0}, false] unless successful?(status_response)
+
+      rename_count = rename_count(output(status_response))
       response = capture([
         @git, "-C", repository.to_s, "show", "--numstat", "--format=", "--no-color", "--no-ext-diff",
         "-M", "--find-renames", commit
@@ -157,11 +162,10 @@ module Cyborg
         fields = line.chomp.split("\t", 3)
         next unless fields.length == 3
 
-        additions, deletions, path = fields
+        additions, deletions, _path = fields
         if additions == "-" || deletions == "-"
           totals[:binary_files] += 1
           totals[:files_changed] += 1
-          totals[:rename_only_files] += 1 if rename_path?(path) && additions == "-" && deletions == "-"
           next
         end
         next unless additions.match?(/\A\d+\z/) && deletions.match?(/\A\d+\z/)
@@ -169,8 +173,8 @@ module Cyborg
         totals[:additions] += additions.to_i
         totals[:deletions] += deletions.to_i
         totals[:files_changed] += 1
-        totals[:rename_only_files] += 1 if additions == "0" && deletions == "0" && rename_path?(path)
       end
+      totals[:rename_only_files] = rename_count
       [totals, !response_truncated?(response)]
     rescue ArgumentError
       [{additions: 0, deletions: 0, binary_files: 0, rename_only_files: 0, files_changed: 0}, false]
@@ -267,8 +271,9 @@ module Cyborg
       value.byteslice(0, 4_096).force_encoding(Encoding::UTF_8).scrub
     end
 
-    def rename_path?(path)
-      path.to_s.include?(" => ")
+    def rename_count(value)
+      fields = value.to_s.split("\x00")
+      fields.each_with_index.count { |field, index| index.even? && field.to_s.start_with?("R") }
     end
 
     def capture(argv, timeout:, max_bytes:)

@@ -26,7 +26,8 @@ module Cyborg
       seen = {}
 
       Array(explicit_paths).each do |value|
-        add_repository(Pathname.new(value.to_s).expand_path, repositories, seen, max_repositories)
+        path = Pathname.new(value.to_s).expand_path
+        add_repository(path, repositories, seen, max_repositories) if repository?(path, path)
         break if repositories.length >= max_repositories
       end
 
@@ -34,7 +35,7 @@ module Cyborg
         break if repositories.length >= max_repositories
 
         root = Pathname.new(value.to_s).expand_path
-        walk(root, 0, max_depth, repositories, seen, max_repositories)
+        walk(root, 0, max_depth, repositories, seen, max_repositories, root)
       end
 
       repositories
@@ -42,11 +43,11 @@ module Cyborg
 
     private
 
-    def walk(path, depth, max_depth, repositories, seen, max_repositories)
+    def walk(path, depth, max_depth, repositories, seen, max_repositories, allowed_root)
       return if repositories.length >= max_repositories
       return unless directory_without_symlink?(path)
 
-      if repository?(path)
+      if repository?(path, allowed_root)
         add_repository(path, repositories, seen, max_repositories)
         return
       end
@@ -58,7 +59,7 @@ module Cyborg
         child = path.join(entry)
         next unless directory_without_symlink?(child)
 
-        walk(child, depth + 1, max_depth, repositories, seen, max_repositories)
+        walk(child, depth + 1, max_depth, repositories, seen, max_repositories, allowed_root)
       end
     rescue Errno::EACCES, Errno::ENOENT, Errno::ENOTDIR
       nil
@@ -74,13 +75,46 @@ module Cyborg
       repositories << path
     end
 
-    def repository?(path)
+    def repository?(path, allowed_root)
+      git_marker = path.join(".git")
+      marker_stat = git_marker.lstat
+      return false if marker_stat.symlink?
+
       result = @runner.capture(
         argv: [@git, "-C", path.to_s, "rev-parse", "--git-dir"],
         timeout: @timeout, max_bytes: REV_PARSE_BYTES, env: {}
       )
-      result.respond_to?(:success?) && result.success?
+      return false unless result.respond_to?(:success?) && result.success?
+
+      gitdir = resolve_gitdir(path, output(result))
+      return false unless safely_within?(gitdir, allowed_root)
+
+      common_result = @runner.capture(
+        argv: [@git, "-C", path.to_s, "rev-parse", "--git-common-dir"],
+        timeout: @timeout, max_bytes: REV_PARSE_BYTES, env: {}
+      )
+      return false unless common_result.respond_to?(:success?) && common_result.success?
+
+      safely_within?(resolve_gitdir(path, output(common_result)), allowed_root)
     rescue Errno::ENOENT, Errno::EACCES, ArgumentError
+      false
+    end
+
+    def output(result)
+      result.respond_to?(:stdout) ? result.stdout.to_s.strip : result.fetch(:stdout).to_s.strip
+    end
+
+    def resolve_gitdir(path, value)
+      candidate = Pathname.new(value.to_s)
+      candidate = path.join(candidate) unless candidate.absolute?
+      candidate.realpath
+    end
+
+    def safely_within?(candidate, root)
+      candidate = Pathname.new(candidate.to_s).realpath
+      root = Pathname.new(root.to_s).realpath
+      candidate == root || candidate.to_s.start_with?(root.to_s + File::SEPARATOR)
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ENOTDIR
       false
     end
 

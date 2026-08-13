@@ -66,6 +66,41 @@ class CyborgLocalGitAdapterTest < Minitest::Test
     assert_equal "healthy", result.status
   end
 
+  def test_same_commit_in_two_repositories_is_emitted_once_per_repository
+    second = @root.join("second")
+    FileUtils.cp_r(@repo.to_s, second.to_s)
+    context = @context.with(limits: {max_records: 10, max_repositories: 4, max_response_bytes: 65_536, max_seconds: 5})
+    result = Cyborg::LocalGitAdapter.new(roots: [@root], timeout: 2).fetch(context)
+
+    records = result.records.select { |item| item.source_record_id == @commit }
+    assert_equal 2, records.length
+    assert_equal 2, records.map { |item| item.structured_fields.fetch("repository_identity") }.uniq.length
+  end
+
+  def test_authored_timestamp_controls_window_not_commit_timestamp
+    git("commit", "--quiet", "--allow-empty", "--date", "2024-01-01T12:00:00Z", "-m", "authored-in-window")
+    authored = git_capture("rev-parse", "HEAD").strip
+    context = @context.with(
+      window_start_utc: "2024-01-01T00:00:00Z", window_end_utc: "2024-01-01T23:59:59Z"
+    )
+
+    result = Cyborg::LocalGitAdapter.new(roots: [@root], timeout: 2).fetch(context)
+
+    assert_includes result.records.map(&:source_record_id), authored
+  end
+
+  def test_literal_arrow_filename_is_not_counted_as_rename
+    literal = @repo.join("literal => name")
+    File.write(literal, "one\n")
+    git("add", literal.basename.to_s)
+    git("commit", "--quiet", "-m", "literal filename")
+    commit = git_capture("rev-parse", "HEAD").strip
+    result = Cyborg::LocalGitAdapter.new(roots: [@root], timeout: 2).fetch(@context)
+    record = result.records.find { |item| item.source_record_id == commit }
+
+    assert_equal 0, record.structured_fields.fetch("rename_only_files")
+  end
+
   private
 
   def git(*args)

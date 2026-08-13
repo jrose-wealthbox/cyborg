@@ -64,6 +64,8 @@ module Cyborg
     def capture(argv)
       result = @runner.capture(argv:, timeout: @timeout, max_bytes: BRANCH_BYTES, env: {})
       return nil unless result.respond_to?(:success?) && result.success?
+      return nil if result.respond_to?(:truncated) && result.truncated
+      return nil if result.respond_to?(:timed_out) && result.timed_out
 
       result
     rescue Errno::ENOENT, Errno::EACCES, ArgumentError
