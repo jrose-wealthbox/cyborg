@@ -1,8 +1,8 @@
 # CYBORG Architecture Design v2
 
-Status: Proposed for review
+Status: Approved for implementation
 
-This document defines the target architecture and first usable release of CYBORG, a personal information dashboard and executive-summary agent. It supersedes neither the [original architecture design](./cyborg-architecture-design.md) nor the [product brief](./executive-summary-skill.md) until it is explicitly approved.
+This document defines the approved target architecture and first usable release of CYBORG, a personal information dashboard and executive-summary agent. It supersedes the [original architecture design](./cyborg-architecture-design.md) as implementation authority. The [product brief](./executive-summary-skill.md) remains the source of broader product intent and deferred requirements.
 
 The target architecture describes boundaries intended to survive later source, renderer, and runtime additions. The v1 profile near the end of this document deliberately implements a narrow vertical slice so those boundaries can be tested before CYBORG takes on several unrelated APIs.
 
