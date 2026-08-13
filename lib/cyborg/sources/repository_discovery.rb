@@ -27,7 +27,7 @@ module Cyborg
 
       Array(explicit_paths).each do |value|
         path = Pathname.new(value.to_s).expand_path
-        add_repository(path, repositories, seen, max_repositories) if repository?(path, path)
+        add_repository(path, repositories, seen, max_repositories) if repository?(path, path, explicit: true)
         break if repositories.length >= max_repositories
       end
 
@@ -75,7 +75,7 @@ module Cyborg
       repositories << path
     end
 
-    def repository?(path, allowed_root)
+    def repository?(path, allowed_root, explicit: false)
       git_marker = path.join(".git")
       marker_stat = git_marker.lstat
       return false if marker_stat.symlink?
@@ -87,7 +87,7 @@ module Cyborg
       return false unless result.respond_to?(:success?) && result.success?
 
       gitdir = resolve_gitdir(path, output(result))
-      return false unless safely_within?(gitdir, allowed_root)
+      return false unless explicit || safely_within?(gitdir, allowed_root)
 
       common_result = @runner.capture(
         argv: [@git, "-C", path.to_s, "rev-parse", "--git-common-dir"],
@@ -95,7 +95,7 @@ module Cyborg
       )
       return false unless common_result.respond_to?(:success?) && common_result.success?
 
-      safely_within?(resolve_gitdir(path, output(common_result)), allowed_root)
+      explicit || safely_within?(resolve_gitdir(path, output(common_result)), allowed_root)
     rescue Errno::ENOENT, Errno::EACCES, ArgumentError
       false
     end

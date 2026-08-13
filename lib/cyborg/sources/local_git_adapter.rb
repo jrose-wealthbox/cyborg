@@ -273,7 +273,16 @@ module Cyborg
 
     def rename_count(value)
       fields = value.to_s.split("\x00")
-      fields.each_with_index.count { |field, index| index.even? && field.to_s.start_with?("R") }
+      index = 0
+      count = 0
+      while index < fields.length
+        status = fields[index].to_s
+        index += 1
+        arity = status.start_with?("R", "C") ? 2 : 1
+        count += 1 if status.start_with?("R")
+        index += arity
+      end
+      count
     end
 
     def capture(argv, timeout:, max_bytes:)

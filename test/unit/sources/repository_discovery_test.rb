@@ -62,6 +62,22 @@ class CyborgRepositoryDiscoveryTest < Minitest::Test
     assert_includes repositories, worktree
   end
 
+  def test_explicit_worktree_can_use_common_git_directory_outside_scan_root
+    external_root = Pathname.new(Dir.mktmpdir("cyborg-worktree-external"))
+    worktree = @root.join("explicit-worktree")
+    begin
+      base = external_root.join("base")
+      init_repo(base)
+      run_git(base, "worktree", "add", "--quiet", worktree.to_s)
+
+      repositories = @discovery.call(roots: [], explicit_paths: [worktree], max_depth: 0, max_repositories: 1)
+
+      assert_equal [worktree], repositories
+    ensure
+      FileUtils.rm_rf(external_root)
+    end
+  end
+
   private
 
   def init_repo(path)

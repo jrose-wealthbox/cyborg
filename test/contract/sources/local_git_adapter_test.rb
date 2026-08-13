@@ -101,6 +101,19 @@ class CyborgLocalGitAdapterTest < Minitest::Test
     assert_equal 0, record.structured_fields.fetch("rename_only_files")
   end
 
+  def test_multiple_renames_count_each_source_destination_pair_once
+    FileUtils.mv(@repo.join("text").to_s, @repo.join("renamed").to_s)
+    FileUtils.mv(@repo.join("binary").to_s, @repo.join("binary-renamed").to_s)
+    git("add", "-A")
+    git("commit", "--quiet", "-m", "two renames")
+    commit = git_capture("rev-parse", "HEAD").strip
+
+    result = Cyborg::LocalGitAdapter.new(roots: [@root], timeout: 2).fetch(@context)
+    record = result.records.find { |item| item.source_record_id == commit }
+
+    assert_equal 2, record.structured_fields.fetch("rename_only_files")
+  end
+
   private
 
   def git(*args)

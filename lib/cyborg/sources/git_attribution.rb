@@ -22,10 +22,11 @@ module Cyborg
       repository = repository.to_s
       return "detached" unless commit.match?(/\A[0-9a-f]{40}\z/i)
 
+      current = current_branch(repository)
+      return "detached" if current == :truncated
       branches = branches_containing(commit, repository)
       return "detached" if branches.empty?
 
-      current = current_branch(repository)
       return current if current && branches.include?(current)
 
       primary = normalize_branch(primary_branch)
@@ -38,6 +39,7 @@ module Cyborg
 
     def current_branch(repository)
       result = capture([@git, "-C", repository, "branch", "--show-current"])
+      return :truncated if result == :truncated
       return nil unless result
 
       value = output(result).delete_suffix("\n")
@@ -63,9 +65,9 @@ module Cyborg
 
     def capture(argv)
       result = @runner.capture(argv:, timeout: @timeout, max_bytes: BRANCH_BYTES, env: {})
+      return :truncated if result.respond_to?(:truncated) && result.truncated
+      return :truncated if result.respond_to?(:timed_out) && result.timed_out
       return nil unless result.respond_to?(:success?) && result.success?
-      return nil if result.respond_to?(:truncated) && result.truncated
-      return nil if result.respond_to?(:timed_out) && result.timed_out
 
       result
     rescue Errno::ENOENT, Errno::EACCES, ArgumentError
@@ -74,7 +76,7 @@ module Cyborg
 
     def output(result)
       if result.respond_to?(:stdout)
-        result.stdout.to_s.force_encoding(Encoding::UTF_8).scrub
+        result.stdout.to_s.dup.force_encoding(Encoding::UTF_8).scrub
       elsif result.respond_to?(:fetch)
         result.fetch(:stdout).to_s.force_encoding(Encoding::UTF_8).scrub
       else

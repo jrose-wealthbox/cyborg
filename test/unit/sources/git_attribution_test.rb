@@ -59,6 +59,26 @@ class CyborgGitAttributionTest < Minitest::Test
     assert_equal "detached", attribution.branch_for(commit: @commit, repository: @repo)
   end
 
+  def test_truncated_current_branch_does_not_fall_back_to_primary
+    runner = Class.new do
+      def initialize
+        @calls = 0
+      end
+
+      def capture(**)
+        @calls += 1
+        if @calls == 1
+          Cyborg::ProcessResult.new(stdout: "partial", stderr: "", status: 0, timed_out: false, truncated: true)
+        else
+          Cyborg::ProcessResult.new(stdout: "feature/current\x001\n", stderr: "", status: 0, timed_out: false, truncated: false)
+        end
+      end
+    end.new
+
+    attribution = Cyborg::GitAttribution.new(runner:, primary_branch: "primary", timeout: 2)
+    assert_equal "detached", attribution.branch_for(commit: @commit, repository: @repo)
+  end
+
   private
 
   def run_git(*args)
