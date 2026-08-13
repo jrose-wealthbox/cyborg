@@ -461,13 +461,16 @@ module Cyborg
       end
 
       def prior_subject_key_value(claim)
-        values = %w[prior_subject_key previous_subject_key legacy_subject_key].filter_map { |key| claim[key] }
-        fail!("analysis.schema", "prior_subject_key") if values.uniq.length > 1
-        value = values.first
-        return nil if value.nil?
+        fields = %w[prior_subject_key previous_subject_key legacy_subject_key]
+        present = fields.select { |key| claim.key?(key) }
+        return nil if present.empty?
 
-        fail!("analysis.schema", "prior_subject_key") unless value.is_a?(String) && !value.strip.empty? && value.bytesize <= MAXIMUM_TEXT_BYTES
-        value
+        values = present.map { |key| claim[key] }
+        fail!("analysis.schema", "prior_subject_key") unless values.all? do |value|
+          value.is_a?(String) && !value.strip.empty? && value.bytesize <= MAXIMUM_TEXT_BYTES
+        end
+        fail!("analysis.schema", "prior_subject_key") if values.uniq.length > 1
+        values.first
       end
 
       def required_array(hash, field)

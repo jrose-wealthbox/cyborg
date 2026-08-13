@@ -38,6 +38,17 @@ class CyborgAnalysisResultValidatorTest < Minitest::Test
     assert_equal "legacy-subject-key", outcome.claims.first.prior_subject_key
   end
 
+  def test_rejects_present_invalid_prior_subject_key_aliases
+    %w[prior_subject_key previous_subject_key legacy_subject_key].each do |field|
+      [nil, false, 123, "   "].each do |value|
+        rejection = reject(valid_claim.merge(field => value))
+
+        assert_instance_of Cyborg::Analysis::RejectedAnalysis, rejection
+        assert_equal "analysis.schema", rejection.code, "expected #{field}=#{value.inspect} to be rejected"
+      end
+    end
+  end
+
   def test_one_unknown_evidence_id_rejects_every_claim
     result = @valid_result.merge(
       "claims" => [valid_claim, valid_claim.merge("evidence_ids" => ["missing"])]
