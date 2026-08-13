@@ -31,17 +31,30 @@ module Cyborg
       end
 
       command = argv.shift
-      unless COMMANDS.key?(command) || command == "runs"
+      unless COMMANDS.key?(command) || %w[runs actions config cache].include?(command)
         raise UsageError.new("cli.unknown_command")
       end
       config_path = extract_config!(argv)
       container = build_container(config_path)
       begin
-        command_class, command_args = if command == "runs"
+        command_class, command_args = case command
+        when "runs"
           nested = argv.shift
           raise UsageError.new("cli.unknown_command") unless nested == "abandon"
 
           [Commands::RunsAbandon, argv]
+        when "actions"
+          [Commands::Actions, argv]
+        when "config"
+          nested = argv.shift
+          raise UsageError.new("cli.unknown_command") unless nested == "path"
+
+          [Commands::ConfigPath, argv]
+        when "cache"
+          nested = argv.shift
+          raise UsageError.new("cli.unknown_command") unless nested == "invalidate"
+
+          [Commands::CacheInvalidate, argv]
         else
           [COMMANDS.fetch(command), argv]
         end
