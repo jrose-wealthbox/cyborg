@@ -23,7 +23,60 @@ The configuration contains policy and identifiers only. Never put credentials,
 tokens, passwords, private keys, or source bodies in it. The CLI creates and
 migrates the SQLite database in the configured state directory.
 
-## Interactive host workflow
+The bundled fixture source is offline and credential-free, so the commands
+above are enough to initialize CYBORG and verify its local configuration. The
+fixture file is intentionally copied beside the configuration so the example
+continues to work outside the repository directory.
+
+## Credentials
+
+CYBORG does not store provider or model credentials. Authentication remains
+with the tool or coding harness that already owns it:
+
+| Source or service | Credential source |
+| --- | --- |
+| Fixture | None; reads the copied local fixture file. |
+| Local Git | None; reads existing local repositories without fetching. |
+| GitHub | The authenticated GitHub CLI (`gh`) session. |
+| LLM analysis | The active coding-harness session; CYBORG has no LLM API-key configuration field. |
+
+For direct GitHub retrieval, install `gh` and authenticate it separately:
+
+```sh
+gh auth login --hostname github.com --web
+gh auth status --active --hostname github.com
+```
+
+Then enable the GitHub source in `~/.config/cyborg/config.toml`. The source's
+`account` value is an identifier, not a credential. For headless environments,
+inject `GH_TOKEN` or `GITHUB_TOKEN` from a secret manager into the process
+environment; these variables override stored `gh` credentials. Do not save
+tokens in CYBORG TOML, committed `.env` files, prompts, logs, or artifacts.
+
+## Run through a coding harness
+
+CYBORG currently has no single `run` command. A coding harness coordinates the
+versioned bridge workflow while Ruby retains authority over retrieval bounds,
+validation, cache policy, action state, publication, and rendering.
+
+Open the repository in Codex, Claude Code, or another coding harness that can
+read local skills, then give it this prompt:
+
+```text
+Read and use `skills/cyborg/SKILL.md`. Run CYBORG interactively with profile `default` and artifacts under `/tmp/cyborg-artifacts`. Follow `skills/cyborg/references/bridge-protocol.md` through prepare, optional retrieval ingestion, analysis-packet execution, record-result, and Markdown rendering. Display only the renderer output and keep lease contents and protected source payloads out of prompts and logs.
+```
+
+The harness will coordinate:
+
+```text
+prepare → optional ingest → analysis-packet → host analysis → record-result → render
+```
+
+The repository-local skill is not installed globally. If the harness does not
+discover it automatically, explicitly direct the harness to the path shown in
+the prompt.
+
+## Manual host workflow
 
 The provider-neutral host adapter is documented in
 [`skills/cyborg/SKILL.md`](skills/cyborg/SKILL.md) and its
@@ -39,8 +92,9 @@ bin/cyborg render --format markdown
 
 Host retrieval responses must use only declared request operations and bounds,
 then be submitted with `bin/cyborg ingest`. Display only renderer output; do
-not compose a substitute briefing. Lease tokens and protected source payloads
-stay out of prompts, arguments, logs, and displayed output.
+not compose a substitute briefing. Pass the lease-file path—not its contents—to
+later commands. Lease tokens and protected source payloads stay out of prompts,
+arguments, logs, and displayed output.
 
 ## Actions and cache controls
 
