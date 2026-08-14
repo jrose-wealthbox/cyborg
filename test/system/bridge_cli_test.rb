@@ -221,6 +221,7 @@ class CyborgBridgeCLITest < Minitest::Test
     assert_equal 3, requests.length
 
     responses = requests.each_with_index.map do |request, index|
+      record_at = (Time.iso8601(request.fetch("window_end_utc")) - (requests.length - index - 1)).utc.iso8601
       {
         "request_id" => request.fetch("id"), "status" => "healthy", "data_status" => "fresh",
         "started_at" => request.fetch("window_start_utc"), "completed_at" => request.fetch("window_end_utc"),
@@ -228,7 +229,7 @@ class CyborgBridgeCLITest < Minitest::Test
           "source_record_id" => "shared-batch-record", "record_kind" => "notification",
           "title" => index < 2 ? "Shared batch record" : "Conflicting batch record", "summary" => "A bounded batch record",
           "structured_fields" => {"batch" => index + 1}, "participants" => [], "owner_identity" => "me",
-          "event_at" => request.fetch("window_end_utc"), "observed_at" => request.fetch("window_end_utc"),
+          "event_at" => record_at, "observed_at" => record_at,
           # Deliberately reuse a claimed fingerprint for a changed payload. The
           # bridge must recompute identity from canonical record content.
           "timestamp_kind" => "event_at", "content_fingerprint" => "shared-batch-fp"
@@ -313,7 +314,15 @@ class CyborgBridgeCLITest < Minitest::Test
   end
 
   def test_prepare_ingests_bounded_fixture_source_without_network
-    fixture_path = File.expand_path("../fixtures/sources/fixture-records.json", __dir__)
+    fixture_template = JSON.parse(File.read(File.expand_path("../fixtures/sources/fixture-records.json", __dir__)))
+    observed_at = Time.now.utc
+    fixture_template.fetch("records").each_with_index do |record, index|
+      record["event_at"] = (observed_at - ((index + 1) * 60)).iso8601
+      record["observed_at"] = observed_at.iso8601
+      Array(record["evidence"]).each { |evidence| evidence["evidence_at"] = record.fetch("event_at") }
+    end
+    fixture_path = File.join(@tmpdir, "fixture-records.json")
+    File.write(fixture_path, JSON.generate(fixture_template))
     File.open(@config, "a") do |file|
       file.write(<<~TOML)
 
