@@ -24,10 +24,24 @@ module Cyborg
           document = load_document(store:, path: Pathname(options.fetch("input")).expand_path, run_id:)
           packet = analysis_packet(store:, run_id:)
           validated = Analysis::ResultValidator.new.validate(packet:, result: document.fetch("payload"))
-          result = Runs::Publisher.new(
-            db:, now: container.clock.now, footer: container.config.footer,
-            trusted_hosts: trusted_hosts
-          ).publish(run:, analysis: validated)
+          cached_payload = bridge_cache.fetch(
+            packet:, backend_identity: analysis_backend_identity, now: container.clock.now
+          )
+          cached = cached_payload && equivalent_cached_result?(cached_payload, document.fetch("payload"))
+          publication_analysis = cached ? analysis_without_provider_cost(validated) : validated
+          result = nil
+          db.transaction(mode: :immediate) do
+            result = Runs::Publisher.new(
+              db:, now: container.clock.now, footer: container.config.footer,
+              trusted_hosts: trusted_hosts
+            ).publish(run:, analysis: publication_analysis)
+            if cacheable_result?(validated, result) && !cached
+              bridge_cache.store(
+                packet:, result: document.fetch("payload"), backend_identity: analysis_backend_identity,
+                run_id:, now: container.clock.now
+              )
+            end
+          end
           remember_result(store:, run_id:, document:)
           lease_manager.release_verified!(run_id:, lease_file:)
           stdout.puts safe_json("run_id" => run_id, "status" => result.run.status, "presentation_id" => result.presentation.id,
@@ -68,6 +82,7 @@ module Cyborg
         unless same_recorded_result?(store:, run_id:, input_fingerprint:)
           raise InvalidArtifact.new("bridge.changed_response", exit_status: 65)
         end
+        repair_bridge_cache!(store:, run_id:, document:)
         Repositories::PresentationRepository.new(db).for_run(run_id: run_id, profile: run_repository.find(run_id).profile).first
         stdout.puts safe_json("run_id" => run_id, "status" => run_repository.find(run_id).status, "presentation" => presentation_path(store:, run_id:))
         0
@@ -81,6 +96,61 @@ module Cyborg
       def presentation_path(store:, run_id:)
         store.root.join(run_id, "presentation.json").to_s
       end
+
+      def cacheable_result?(validated, published)
+        return false if validated.respond_to?(:accepted?) && !validated.accepted?
+
+        published.run.status == "completed"
+      end
+
+      def analysis_without_provider_cost(validated)
+        return validated if validated.respond_to?(:accepted?) && !validated.accepted?
+
+        Analysis::AnalysisOutcome.new(
+          claims: validated.claims, usage: {}, backend_metadata: validated.backend_metadata
+        )
+      end
+
+      def equivalent_cached_result?(cached, submitted)
+        normalize_cached_result(cached) == normalize_cached_result(submitted)
+      end
+
+      def normalize_cached_result(value)
+        case value
+        when Hash
+          value.each_with_object({}) do |(key, item), result|
+            name = key.to_s
+            result[name] = if name == "run_id"
+              "<run>"
+            else
+              normalize_cached_result(item)
+            end
+          end
+        when Array
+          value.map { |item| normalize_cached_result(item) }
+        else
+          value
+        end
+      end
+
+      def repair_bridge_cache!(store:, run_id:, document:)
+        run = run_repository.find(run_id)
+        return unless run&.status == "completed"
+
+        packet = analysis_packet(store:, run_id:)
+        return if bridge_cache.fetch(packet:, backend_identity: analysis_backend_identity, now: container.clock.now)
+
+        validated = Analysis::ResultValidator.new.validate(packet:, result: document.fetch("payload"))
+        return if validated.respond_to?(:accepted?) && !validated.accepted?
+
+        bridge_cache.store(
+          packet:, result: document.fetch("payload"), backend_identity: analysis_backend_identity,
+          run_id:, now: container.clock.now
+        )
+      rescue Cyborg::Error, KeyError, JSON::ParserError
+        nil
+      end
+
     end
   end
 end

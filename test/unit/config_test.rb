@@ -19,6 +19,21 @@ class CyborgConfigTest < Minitest::Test
     assert_predicate config, :frozen?
   end
 
+  def test_omitted_analysis_backend_identity_uses_the_coding_harness_default
+    config = Cyborg::Config.load(path: fixture("config/minimal.toml"), env: {})
+
+    assert_equal "coding-harness", config.to_h.dig("analysis", "backend_identity")
+  end
+
+  def test_rejects_blank_or_invalid_analysis_backend_identity
+    ["", "provider/model", 42].each do |identity|
+      error = assert_raises(Cyborg::InvalidConfiguration) do
+        load_toml("#{File.read(fixture("config/minimal.toml"))}\n[analysis]\nbackend_identity = #{identity.is_a?(String) ? identity.inspect : identity}\n")
+      end
+      assert_equal "config.invalid_backend_identity", error.code
+    end
+  end
+
   def test_fingerprint_includes_all_recognized_non_secret_configuration_sections
     baseline = File.read(fixture("config/minimal.toml"))
     baseline_fingerprint = load_toml(baseline).fingerprint

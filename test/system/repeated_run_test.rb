@@ -40,4 +40,30 @@ class CyborgRepeatedRunTest < Minitest::Test
     db&.disconnect
     FileUtils.remove_entry(tmpdir) if tmpdir
   end
+
+  def test_one_hundred_bridge_packet_lookups_keep_one_expensive_entry
+    tmpdir = Dir.mktmpdir("cyborg-bridge-repeated-run")
+    db = Cyborg::Database.connect(path: File.join(tmpdir, "cyborg.sqlite3"))
+    db.migrate!
+    cache = Cyborg::Analysis::BridgeCache.new(db:, expensive_ttl_seconds: 14_400)
+    packet = {
+      "packet_version" => "1.0", "run_id" => "run-1", "prompt_version" => "prompt-1",
+      "configuration_version" => "config-1",
+      "versions" => {"packet" => "1.0", "prompt" => "prompt-1", "configuration" => "config-1", "task" => "1.0"},
+      "records" => [], "tasks" => [], "action_state_version" => 0
+    }
+    result = {"claims" => [], "usage" => {}, "task_results" => [], "backend_metadata" => {}}
+    cache.store(packet:, result:, backend_identity: "coding-harness", run_id: "run-1", now: Time.utc(2026, 8, 14, 12))
+
+    100.times do |index|
+      assert_equal result, cache.fetch(
+        packet: packet.merge("run_id" => "run-#{index + 2}"), backend_identity: "coding-harness",
+        now: Time.utc(2026, 8, 14, 12, 1)
+      )
+    end
+    assert_equal 1, db[:cache_entries].where(stage: "bridge_analysis").count
+  ensure
+    db&.disconnect
+    FileUtils.remove_entry(tmpdir) if tmpdir
+  end
 end

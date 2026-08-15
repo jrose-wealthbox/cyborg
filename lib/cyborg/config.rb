@@ -34,6 +34,7 @@ module Cyborg
     DEFAULT_CEILING_MICROS = 5_000_000
     DEFAULT_ORDINARY_CACHE_TTL_SECONDS = 1_800
     DEFAULT_EXPENSIVE_CACHE_TTL_SECONDS = 14_400
+    DEFAULT_BACKEND_IDENTITY = "coding-harness".freeze
     DEFAULT_PROFILE_HOLIDAYS = %w[
       new_years_day martin_luther_king_jr_day juneteenth independence_day labor_day
       thanksgiving christmas
@@ -157,7 +158,7 @@ module Cyborg
       @budget = resolve_budget(@raw)
       @cache = resolve_cache(@raw)
       @timeouts = resolve_timeouts(@raw, @runtime)
-      @analysis = deep_freeze(fetch_hash(@raw, "analysis"))
+      @analysis = deep_freeze(resolve_analysis(@raw))
       @renderer = deep_freeze(fetch_hash(@raw, "renderer", "output"))
       @output = deep_freeze(fetch_hash(@raw, "output"))
       @footer = @raw["footer"]
@@ -456,6 +457,16 @@ module Cyborg
       lease = runtime["lease_timeout_seconds"] || values["lease_timeout_seconds"] || values["lease_seconds"] || DEFAULT_LEASE_TIMEOUT_SECONDS
       analysis = runtime["analysis_timeout_seconds"] || values["analysis_timeout_seconds"] || values["analysis_seconds"] || DEFAULT_ANALYSIS_TIMEOUT_SECONDS
       Timeouts.new(integer(lease, "config.invalid_timeout"), integer(analysis, "config.invalid_timeout"))
+    end
+
+    def resolve_analysis(raw)
+      values = fetch_hash(raw, "analysis")
+      identity = values.fetch("backend_identity", DEFAULT_BACKEND_IDENTITY)
+      unless identity.is_a?(String) && identity.match?(/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/)
+        raise_invalid("config.invalid_backend_identity", "analysis.backend_identity must be a nonblank identifier")
+      end
+      values["backend_identity"] = identity
+      values
     end
 
     def validate_required_sections!

@@ -73,6 +73,86 @@ class CyborgBridgeCLITest < Minitest::Test
     assert_includes rendered_markdown[:stdout], "# CYBORG"
   end
 
+  def test_cache_reuses_validated_analysis_for_an_identical_second_run
+    File.open(@config, "a") do |file|
+      file.write(<<~TOML)
+
+        [analysis]
+        backend_identity = "coding-harness"
+        [analysis.tasks.task-1]
+        capability = "cheap_structured_extraction"
+        required = true
+        reservation_micros = 1
+      TOML
+    end
+
+    first = run_cli("prepare", "--profile", "default", "--artifact-dir", @artifacts)
+    assert_equal 0, first[:status], first[:stderr]
+    first_handoff = JSON.parse(first[:stdout])
+    first_packet = run_cli(
+      "analysis-packet", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file")
+    )
+    assert_equal 0, first_packet[:status], first_packet[:stderr]
+    first_status = JSON.parse(first_packet[:stdout])
+    assert_equal "required", first_status.fetch("analysis_status")
+    assert_nil first_status.fetch("analysis_result")
+
+    first_result_path = write_fixture_result(first_handoff, provider_cost: true)
+    recorded = run_cli(
+      "record-result", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file"),
+      "--input", first_result_path
+    )
+    assert_equal 0, recorded[:status], recorded[:stderr]
+
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    database.execute("DELETE FROM cache_entries WHERE stage = 'bridge_analysis'")
+    database.close
+    repaired = run_cli(
+      "record-result", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file"),
+      "--input", first_result_path
+    )
+    assert_equal 0, repaired[:status], repaired[:stderr]
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    assert_equal 1, database.get_first_value("SELECT COUNT(*) FROM cache_entries WHERE stage = 'bridge_analysis'")
+    database.close
+
+    second = run_cli("prepare", "--profile", "default", "--artifact-dir", @artifacts)
+    assert_equal 0, second[:status], second[:stderr]
+    second_handoff = JSON.parse(second[:stdout])
+    second_packet = run_cli(
+      "analysis-packet", "--run", second_handoff.fetch("run_id"), "--lease-file", second_handoff.fetch("lease_file")
+    )
+    assert_equal 0, second_packet[:status], second_packet[:stderr]
+    second_status = JSON.parse(second_packet[:stdout])
+    assert_equal "cached", second_status.fetch("analysis_status")
+    cached_path = second_status.fetch("analysis_result")
+    assert File.file?(cached_path)
+
+    cached_envelope = JSON.parse(File.read(cached_path))
+    assert_equal second_handoff.fetch("run_id"), cached_envelope.fetch("run_id")
+    assert_equal Cyborg::Bridge::CanonicalJSON.sha256(cached_envelope.fetch("payload")), cached_envelope.fetch("payload_sha256")
+    assert_equal normalize_run_ids(JSON.parse(File.read(first_result_path)).fetch("payload")), normalize_run_ids(cached_envelope.fetch("payload"))
+
+    cached_record = run_cli(
+      "record-result", "--run", second_handoff.fetch("run_id"), "--lease-file", second_handoff.fetch("lease_file"),
+      "--input", cached_path
+    )
+    assert_equal 0, cached_record[:status], cached_record[:stderr]
+
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    usage_cost = database.get_first_value(
+      "SELECT COALESCE(SUM(cost_micros), 0) FROM usage_records WHERE run_id = ?", second_handoff.fetch("run_id")
+    )
+    first_usage_cost = database.get_first_value(
+      "SELECT COALESCE(SUM(cost_micros), 0) FROM usage_records WHERE run_id = ?", first_handoff.fetch("run_id")
+    )
+    cache_count = database.get_first_value("SELECT COUNT(*) FROM cache_entries WHERE stage = 'bridge_analysis'")
+    database.close
+    assert_equal 7, first_usage_cost
+    assert_equal 0, usage_cost
+    assert_equal 1, cache_count
+  end
+
   def test_unsupported_option_is_usage_error
     result = run_cli("prepare", "--unexpected", "value")
 
@@ -366,9 +446,50 @@ class CyborgBridgeCLITest < Minitest::Test
     result = run_cli("record-result", "--run", run_id, "--lease-file", handoff.fetch("lease_file"), "--input", result_path)
     assert_equal 0, result[:status], result[:stderr]
     assert_equal "degraded", JSON.parse(result[:stdout]).fetch("status")
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    assert_equal 0, database.get_first_value("SELECT COUNT(*) FROM cache_entries WHERE stage = 'bridge_analysis'")
+    database.close
   end
 
   private
+
+  def write_fixture_result(handoff, provider_cost: false)
+    run_id = handoff.fetch("run_id")
+    packet_path = File.join(@artifacts, run_id, "analysis-packet.json")
+    packet = JSON.parse(File.read(packet_path)).fetch("payload")
+    task = packet.fetch("tasks").fetch(0)
+    usage = if provider_cost
+      {"certainty" => "provider_reported", "records" => [{
+        "id" => "usage-1", "run_id" => run_id, "task_id" => task.fetch("id"), "session_id" => "session-1",
+        "input_tokens" => 2, "output_tokens" => 3, "cost_micros" => 7, "certainty" => "provider_reported"
+      }]}
+    else
+      {}
+    end
+    payload = {
+      "claims" => [], "usage" => usage, "task_results" => [{
+        "id" => task.fetch("id"), "task_id" => task.fetch("id"), "capability" => task.fetch("capability"),
+        "dependency_ids" => task.fetch("dependency_ids", []), "status" => "succeeded", "claims" => [], "usage" => nil
+      }], "backend_metadata" => {}
+    }
+    path = File.join(@artifacts, run_id, "analysis-result.json")
+    envelope = Cyborg::Bridge::Envelope.build(type: "analysis_result", run_id:, payload:, created_at: Time.now.utc)
+    File.write(path, Cyborg::Bridge::CanonicalJSON.dump(envelope))
+    path
+  end
+
+  def normalize_run_ids(value)
+    case value
+    when Hash
+      value.each_with_object({}) do |(key, item), result|
+        result[key] = key.to_s == "run_id" ? "<run>" : normalize_run_ids(item)
+      end
+    when Array
+      value.map { |item| normalize_run_ids(item) }
+    else
+      value
+    end
+  end
 
   def run_cli(*arguments)
     env = {

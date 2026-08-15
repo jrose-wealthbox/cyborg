@@ -266,6 +266,16 @@ module Cyborg
       def safe_json(value)
         Bridge::CanonicalJSON.dump(value)
       end
+
+      def analysis_backend_identity
+        container.config.to_h.dig("analysis", "backend_identity") || Config::DEFAULT_BACKEND_IDENTITY
+      end
+
+      def bridge_cache
+        @bridge_cache ||= Analysis::BridgeCache.new(
+          db:, expensive_ttl_seconds: container.config.cache.expensive_ttl_seconds
+        )
+      end
     end
   end
 end

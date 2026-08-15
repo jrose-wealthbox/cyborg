@@ -14,6 +14,9 @@ ceiling_micros = 5000000
 ordinary_ttl_seconds = 1800
 expensive_ttl_seconds = 14400
 
+[analysis]
+backend_identity = "coding-harness"
+
 [calendar.profiles.default]
 timezone = "America/New_York"
 weekend_days = ["saturday", "sunday"]

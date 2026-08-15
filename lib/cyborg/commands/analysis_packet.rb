@@ -24,7 +24,20 @@ module Cyborg
           ).call(run:, records:, actions: actions_for_packet, tasks:, reservation:)
           path = output_path(store:, run_id:, requested: options["output"], default_filename: "analysis-packet.json")
           write_envelope(store:, run_id:, filename: path.basename.to_s, type: "analysis_packet", payload: packet)
-          stdout.puts safe_json("run_id" => run_id, "status" => run_repository.find(run_id).status, "output" => path.to_s)
+          cached_result = bridge_cache.fetch(
+            packet:, backend_identity: analysis_backend_identity, now: container.clock.now
+          )
+          result_path = if cached_result
+            result_payload = rebind_cached_result(cached_result, run_id:)
+            write_envelope(
+              store:, run_id:, filename: "analysis-result.json", type: "analysis_result", payload: result_payload
+            ).first
+          end
+          stdout.puts safe_json(
+            "run_id" => run_id, "status" => run_repository.find(run_id).status, "output" => path.to_s,
+            "analysis_status" => cached_result ? "cached" : "required",
+            "analysis_result" => result_path&.to_s
+          )
           0
         end
       end
@@ -121,6 +134,23 @@ module Cyborg
       def capture_action_state!(run_id)
         max_version = db[:inferred_actions].max(:state_version).to_i
         db[:runs].where(id: run_id).update(captured_action_state_version: max_version)
+      end
+
+      def rebind_cached_result(result, run_id:)
+        rebind_result_value(JSON.parse(JSON.generate(result)), run_id:)
+      end
+
+      def rebind_result_value(value, run_id:)
+        case value
+        when Hash
+          value.each_with_object({}) do |(key, item), result|
+            result[key] = key.to_s == "run_id" ? run_id : rebind_result_value(item, run_id:)
+          end
+        when Array
+          value.map { |item| rebind_result_value(item, run_id:) }
+        else
+          value
+        end
       end
     end
   end
