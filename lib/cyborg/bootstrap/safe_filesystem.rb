@@ -39,8 +39,9 @@ module Cyborg
       end
       attr_accessor :before_publish
 
-      def initialize(before_publish: nil)
+      def initialize(before_publish: nil, unlinkat: nil)
         @before_publish = before_publish
+        @unlinkat = unlinkat || ->(parent_fd, name, flags) { LibC.unlinkat(parent_fd, name, flags) }
       end
 
       def install(path:, bytes:, mode: 0o600)
@@ -312,7 +313,7 @@ module Cyborg
 
       def cleanup_temp(parent_fd, temp_name, temp_fd)
         close_fd(temp_fd)
-        unlink_result = LibC.unlinkat(parent_fd, temp_name, 0)
+        unlink_result = @unlinkat.call(parent_fd, temp_name, 0)
         unlink_errno = errno if unlink_result < 0
         cleanup_error = if unlink_result < 0 && unlink_errno != Errno::ENOENT::Errno
           InvalidConfiguration.new("config.persistence")

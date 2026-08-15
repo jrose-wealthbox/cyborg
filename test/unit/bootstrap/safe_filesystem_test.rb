@@ -76,14 +76,10 @@ class CyborgBootstrapSafeFilesystemTest < Minitest::Test
 
   def test_install_surfaces_temp_cleanup_failure_as_persistence_error
     target = File.join(@home, "config.toml")
-    libc = Cyborg::Bootstrap::SafeFilesystem::LibC
-    original = libc.method(:unlinkat)
-    libc.define_singleton_method(:unlinkat) { |_parent, _name, _flags| -1 }
+    filesystem = Cyborg::Bootstrap::SafeFilesystem.new(unlinkat: ->(_parent, _name, _flags) { -1 })
     error = assert_raises(Cyborg::InvalidConfiguration) do
-      @filesystem.install(path: target, bytes: "safe")
+      filesystem.install(path: target, bytes: "safe")
     end
     assert_equal "config.persistence", error.code
-  ensure
-    libc.define_singleton_method(:unlinkat, original) if libc && original
   end
 end
