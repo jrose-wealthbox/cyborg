@@ -28,7 +28,7 @@ module Cyborg
             packet:, backend_identity: analysis_backend_identity, now: container.clock.now
           )
           cached = cached_payload && equivalent_cached_result?(cached_payload, document.fetch("payload"))
-          publication_analysis = cached ? analysis_without_provider_cost(validated) : validated
+          publication_analysis = cached ? analysis_without_provider_cost(validated, run_id:) : validated
           result = nil
           db.transaction(mode: :immediate) do
             result = Runs::Publisher.new(
@@ -103,12 +103,32 @@ module Cyborg
         published.run.status == "completed"
       end
 
-      def analysis_without_provider_cost(validated)
+      def analysis_without_provider_cost(validated, run_id:)
         return validated if validated.respond_to?(:accepted?) && !validated.accepted?
 
         Analysis::AnalysisOutcome.new(
-          claims: validated.claims, usage: {}, backend_metadata: validated.backend_metadata
+          claims: validated.claims, usage: locally_estimated_usage(validated.usage, run_id:),
+          backend_metadata: validated.backend_metadata
         )
+      end
+
+      def locally_estimated_usage(usage, run_id:)
+        return {} unless usage.is_a?(Hash) && usage.any?
+
+        value = JSON.parse(JSON.generate(usage))
+        records = Array(value["records"])
+        return value if records.empty?
+
+        value["certainty"] = "locally_estimated"
+        value["run_id"] = run_id if value.key?("run_id")
+        value["records"] = records.map do |record|
+          record = record.merge("certainty" => "locally_estimated", "run_id" => run_id)
+          record["id"] = "cached-#{run_id}-#{record.fetch("id")}" if record["id"]
+          record["session_id"] = "cached-#{run_id}-#{record.fetch("session_id")}" if record["session_id"]
+          record["parent_session_id"] = nil if record.key?("parent_session_id")
+          record
+        end
+        value
       end
 
       def equivalent_cached_result?(cached, submitted)
@@ -139,6 +159,7 @@ module Cyborg
 
         packet = analysis_packet(store:, run_id:)
         return if bridge_cache.fetch(packet:, backend_identity: analysis_backend_identity, now: container.clock.now)
+        return if bridge_cache.entry_present?(packet:, backend_identity: analysis_backend_identity)
 
         validated = Analysis::ResultValidator.new.validate(packet:, result: document.fetch("payload"))
         return if validated.respond_to?(:accepted?) && !validated.accepted?

@@ -68,9 +68,61 @@ class CyborgBridgeCacheTest < Minitest::Test
     assert_nil @cache.fetch(packet:, backend_identity: "coding-harness", now: NOW + 1)
   end
 
+  def test_json_but_semantically_invalid_payload_misses
+    packet = packet(run_id: "run-1")
+    @cache.store(packet:, result: valid_result, backend_identity: "coding-harness", run_id: "run-1", now: NOW)
+    @db[:cache_entries].update(
+      payload_json: JSON.generate(valid_result.merge("claims" => [{"poisoned" => true}]))
+    )
+
+    assert_nil @cache.fetch(packet:, backend_identity: "coding-harness", now: NOW + 1)
+  end
+
+  def test_json_array_payload_misses
+    packet = packet(run_id: "run-1")
+    @cache.store(packet:, result: valid_result, backend_identity: "coding-harness", run_id: "run-1", now: NOW)
+    @db[:cache_entries].update(payload_json: JSON.generate([]))
+
+    assert_nil @cache.fetch(packet:, backend_identity: "coding-harness", now: NOW + 1)
+  end
+
+  def test_store_persists_validator_normalized_metadata
+    packet = packet(run_id: "run-1")
+    result = valid_result.merge(
+      "backend_metadata" => {"safe" => "yes", "prompt_body" => "do not persist", "authorization" => "secret"}
+    )
+    @cache.store(packet:, result:, backend_identity: "coding-harness", run_id: "run-1", now: NOW)
+
+    persisted = JSON.parse(@db[:cache_entries].first.fetch(:payload_json))
+    assert_equal "yes", persisted.fetch("backend_metadata").fetch("safe")
+    refute_includes @db[:cache_entries].first.fetch(:payload_json), "do not persist"
+    refute_includes @db[:cache_entries].first.fetch(:payload_json), "secret"
+    assert_equal({"safe" => "yes"}, persisted.fetch("backend_metadata"))
+  end
+
+  def test_fetch_rebinds_and_revalidates_cached_usage_for_a_new_run
+    packet = packet(run_id: "run-1")
+    result = valid_result.merge(
+      "usage" => {"certainty" => "provider_reported", "records" => [{
+        "id" => "usage-1", "run_id" => "run-1", "task_id" => "task-1", "session_id" => "session-1",
+        "input_tokens" => 2, "output_tokens" => 3, "cost_micros" => 7, "certainty" => "provider_reported"
+      }]}
+    )
+    @cache.store(packet:, result:, backend_identity: "coding-harness", run_id: "run-1", now: NOW)
+
+    fetched = @cache.fetch(
+      packet: packet.merge("run_id" => "run-2"), backend_identity: "coding-harness", now: NOW + 1
+    )
+    assert_equal "run-2", fetched.fetch("usage").fetch("records").first.fetch("run_id")
+    assert_equal 7, fetched.fetch("usage").fetch("records").first.fetch("cost_micros")
+  end
+
   def test_cached_payload_contains_only_bounded_result_data
     packet = packet(run_id: "run-1")
-    result = valid_result.merge("task_results" => [{"task_id" => "task-1", "status" => "succeeded"}])
+    result = valid_result.merge("task_results" => [{
+      "id" => "task-1", "task_id" => "task-1", "capability" => "cheap_structured_extraction",
+      "dependency_ids" => [], "status" => "succeeded", "claims" => [], "usage" => nil
+    }])
     @cache.store(packet:, result:, backend_identity: "coding-harness", run_id: "run-1", now: NOW)
 
     row = @db[:cache_entries].first
@@ -86,9 +138,11 @@ class CyborgBridgeCacheTest < Minitest::Test
     {
       "packet_version" => "1.0", "run_id" => run_id, "prompt_version" => "prompt-1",
       "configuration_version" => "config-1",
+      "allowed_action_kinds" => ["review"], "maximum_claim_count" => 25, "maximum_output_bytes" => 8_192,
       "versions" => {"packet" => "1.0", "prompt" => "prompt-1", "configuration" => "config-1", "task" => "1.0"},
       "records" => [{"source_record_id" => "record-1", "content_fingerprint" => "record-fp", "evidence_ids" => ["e1"]}],
-      "tasks" => [{"id" => "task-1", "capability" => "cheap_structured_extraction"}],
+      "tasks" => [{"id" => "task-1", "capability" => "cheap_structured_extraction", "dependency_ids" => [],
+                   "required" => false, "reservation" => {"cost_micros" => 0}}],
       "action_state_version" => 1, "lease" => "must-not-be-cached"
     }
   end

@@ -13,6 +13,10 @@ module Cyborg
         record && record.merge(payload: JSON.parse(record.fetch(:payload_json)))
       end
 
+      def find(stage:, cache_key:)
+        db[:cache_entries].where(stage:, cache_key:).first
+      end
+
       def store(attributes)
         attrs = attributes.to_h
         validate_timestamps!(attrs, %i[created_at expires_at invalidated_at])

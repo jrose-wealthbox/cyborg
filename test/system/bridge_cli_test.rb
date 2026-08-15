@@ -116,6 +116,69 @@ class CyborgBridgeCLITest < Minitest::Test
     assert_equal 1, database.get_first_value("SELECT COUNT(*) FROM cache_entries WHERE stage = 'bridge_analysis'")
     database.close
 
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    database.execute("UPDATE cache_entries SET invalidated_at = '2026-08-14T12:00:01Z' WHERE stage = 'bridge_analysis'")
+    database.close
+    invalidated_retry = run_cli(
+      "record-result", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file"),
+      "--input", first_result_path
+    )
+    assert_equal 0, invalidated_retry[:status], invalidated_retry[:stderr]
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    assert_equal "2026-08-14T12:00:01Z", database.get_first_value(
+      "SELECT invalidated_at FROM cache_entries WHERE stage = 'bridge_analysis'"
+    )
+    database.close
+
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    database.execute("UPDATE cache_entries SET expires_at = '2026-08-14T11:59:59Z' WHERE stage = 'bridge_analysis'")
+    database.close
+    expired_retry = run_cli(
+      "record-result", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file"),
+      "--input", first_result_path
+    )
+    assert_equal 0, expired_retry[:status], expired_retry[:stderr]
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    assert_equal "2026-08-14T11:59:59Z", database.get_first_value(
+      "SELECT expires_at FROM cache_entries WHERE stage = 'bridge_analysis'"
+    )
+    database.close
+
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    database.execute("UPDATE cache_entries SET payload_json = 'not-json' WHERE stage = 'bridge_analysis'")
+    database.close
+    corrupt_retry = run_cli(
+      "record-result", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file"),
+      "--input", first_result_path
+    )
+    assert_equal 0, corrupt_retry[:status], corrupt_retry[:stderr]
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    assert_equal "not-json", database.get_first_value(
+      "SELECT payload_json FROM cache_entries WHERE stage = 'bridge_analysis'"
+    )
+    database.close
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    database.execute("UPDATE cache_entries SET payload_json = '[]' WHERE stage = 'bridge_analysis'")
+    database.close
+    json_shape_retry = run_cli(
+      "record-result", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file"),
+      "--input", first_result_path
+    )
+    assert_equal 0, json_shape_retry[:status], json_shape_retry[:stderr]
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    assert_equal "[]", database.get_first_value(
+      "SELECT payload_json FROM cache_entries WHERE stage = 'bridge_analysis'"
+    )
+    database.close
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    database.execute("DELETE FROM cache_entries WHERE stage = 'bridge_analysis'")
+    database.close
+    repaired_again = run_cli(
+      "record-result", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file"),
+      "--input", first_result_path
+    )
+    assert_equal 0, repaired_again[:status], repaired_again[:stderr]
+
     second = run_cli("prepare", "--profile", "default", "--artifact-dir", @artifacts)
     assert_equal 0, second[:status], second[:stderr]
     second_handoff = JSON.parse(second[:stdout])
@@ -131,7 +194,12 @@ class CyborgBridgeCLITest < Minitest::Test
     cached_envelope = JSON.parse(File.read(cached_path))
     assert_equal second_handoff.fetch("run_id"), cached_envelope.fetch("run_id")
     assert_equal Cyborg::Bridge::CanonicalJSON.sha256(cached_envelope.fetch("payload")), cached_envelope.fetch("payload_sha256")
-    assert_equal normalize_run_ids(JSON.parse(File.read(first_result_path)).fetch("payload")), normalize_run_ids(cached_envelope.fetch("payload"))
+    first_payload = JSON.parse(File.read(first_result_path)).fetch("payload")
+    assert_equal first_payload.fetch("claims"), cached_envelope.fetch("payload").fetch("claims")
+    assert_equal first_payload.fetch("task_results"), cached_envelope.fetch("payload").fetch("task_results")
+    assert_equal first_payload.fetch("backend_metadata"), cached_envelope.fetch("payload").fetch("backend_metadata")
+    assert_equal normalize_run_ids(first_payload.fetch("usage").fetch("records")),
+      normalize_run_ids(cached_envelope.fetch("payload").fetch("usage").fetch("records"))
 
     cached_record = run_cli(
       "record-result", "--run", second_handoff.fetch("run_id"), "--lease-file", second_handoff.fetch("lease_file"),
@@ -141,16 +209,160 @@ class CyborgBridgeCLITest < Minitest::Test
 
     database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
     usage_cost = database.get_first_value(
+      "SELECT COALESCE(SUM(cost_micros), 0) FROM usage_records WHERE run_id = ? AND certainty = 'provider_reported'",
+      second_handoff.fetch("run_id")
+    )
+    second_total_usage_cost = database.get_first_value(
       "SELECT COALESCE(SUM(cost_micros), 0) FROM usage_records WHERE run_id = ?", second_handoff.fetch("run_id")
     )
     first_usage_cost = database.get_first_value(
       "SELECT COALESCE(SUM(cost_micros), 0) FROM usage_records WHERE run_id = ?", first_handoff.fetch("run_id")
     )
     cache_count = database.get_first_value("SELECT COUNT(*) FROM cache_entries WHERE stage = 'bridge_analysis'")
+    first_view = JSON.parse(database.get_first_value(
+      "SELECT view_model_json FROM presentation_results WHERE run_id = ?", first_handoff.fetch("run_id")
+    ))
+    second_view = JSON.parse(database.get_first_value(
+      "SELECT view_model_json FROM presentation_results WHERE run_id = ?", second_handoff.fetch("run_id")
+    ))
+    first_usage_certainties = database.execute(
+      "SELECT certainty FROM usage_records WHERE run_id = ?", first_handoff.fetch("run_id")
+    ).flatten
+    second_usage_certainties = database.execute(
+      "SELECT certainty FROM usage_records WHERE run_id = ?", second_handoff.fetch("run_id")
+    ).flatten
     database.close
     assert_equal 7, first_usage_cost
     assert_equal 0, usage_cost
+    assert_equal 7, second_total_usage_cost
     assert_equal 1, cache_count
+    assert_equal %w[provider_reported], first_usage_certainties
+    assert_equal %w[locally_estimated], second_usage_certainties
+    assert_equal first_view.reject { |key, _| %w[run usage].include?(key) },
+      second_view.reject { |key, _| %w[run usage].include?(key) }
+  end
+
+  def test_cached_status_requires_a_valid_cached_result_payload
+    append_analysis_task_config
+    first = run_cli("prepare", "--profile", "default", "--artifact-dir", @artifacts)
+    assert_equal 0, first[:status], first[:stderr]
+    first_handoff = JSON.parse(first[:stdout])
+    first_packet = run_cli(
+      "analysis-packet", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file")
+    )
+    assert_equal 0, first_packet[:status], first_packet[:stderr]
+    first_result_path = write_fixture_result(first_handoff)
+    recorded = run_cli(
+      "record-result", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file"),
+      "--input", first_result_path
+    )
+    assert_equal 0, recorded[:status], recorded[:stderr]
+
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    poisoned = {"claims" => [{"poisoned" => true}], "usage" => {}, "task_results" => [], "backend_metadata" => {}}
+    database.execute(
+      "UPDATE cache_entries SET payload_json = ? WHERE stage = 'bridge_analysis'", JSON.generate(poisoned)
+    )
+    database.close
+
+    second = run_cli("prepare", "--profile", "default", "--artifact-dir", @artifacts)
+    assert_equal 0, second[:status], second[:stderr]
+    second_handoff = JSON.parse(second[:stdout])
+    second_packet = run_cli(
+      "analysis-packet", "--run", second_handoff.fetch("run_id"), "--lease-file", second_handoff.fetch("lease_file")
+    )
+    assert_equal 0, second_packet[:status], second_packet[:stderr]
+    status = JSON.parse(second_packet[:stdout])
+    assert_equal "required", status.fetch("analysis_status")
+    assert_nil status.fetch("analysis_result")
+  end
+
+  def test_cache_persists_validator_normalized_backend_metadata
+    append_analysis_task_config
+    first = run_cli("prepare", "--profile", "default", "--artifact-dir", @artifacts)
+    assert_equal 0, first[:status], first[:stderr]
+    first_handoff = JSON.parse(first[:stdout])
+    packet = run_cli(
+      "analysis-packet", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file")
+    )
+    assert_equal 0, packet[:status], packet[:stderr]
+    result_path = write_fixture_result(
+      first_handoff, backend_metadata: {"safe" => "yes", "prompt_body" => "raw prompt", "authorization" => "raw token"}
+    )
+    recorded = run_cli(
+      "record-result", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file"),
+      "--input", result_path
+    )
+    assert_equal 0, recorded[:status], recorded[:stderr]
+
+    database = SQLite3::Database.new(File.join(@state, "cyborg.sqlite3"))
+    payload_json = database.get_first_value("SELECT payload_json FROM cache_entries WHERE stage = 'bridge_analysis'")
+    database.close
+    payload = JSON.parse(payload_json)
+    assert_equal({"safe" => "yes"}, payload.fetch("backend_metadata"))
+    refute_includes payload_json, "raw prompt"
+    refute_includes payload_json, "raw token"
+  end
+
+  def test_cache_backend_identity_change_requires_analysis_again
+    append_analysis_task_config
+    first = run_cli("prepare", "--profile", "default", "--artifact-dir", @artifacts)
+    assert_equal 0, first[:status], first[:stderr]
+    first_handoff = JSON.parse(first[:stdout])
+    packet = run_cli(
+      "analysis-packet", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file")
+    )
+    assert_equal 0, packet[:status], packet[:stderr]
+    result_path = write_fixture_result(first_handoff)
+    recorded = run_cli(
+      "record-result", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file"),
+      "--input", result_path
+    )
+    assert_equal 0, recorded[:status], recorded[:stderr]
+
+    contents = File.read(@config).sub('backend_identity = "coding-harness"', 'backend_identity = "other-harness"')
+    File.write(@config, contents)
+    second = run_cli("prepare", "--profile", "default", "--artifact-dir", @artifacts)
+    assert_equal 0, second[:status], second[:stderr]
+    second_handoff = JSON.parse(second[:stdout])
+    second_packet = run_cli(
+      "analysis-packet", "--run", second_handoff.fetch("run_id"), "--lease-file", second_handoff.fetch("lease_file")
+    )
+    assert_equal 0, second_packet[:status], second_packet[:stderr]
+    assert_equal "required", JSON.parse(second_packet[:stdout]).fetch("analysis_status")
+  end
+
+  def test_cache_changed_fixture_input_requires_analysis_again
+    append_analysis_task_config
+    fixture_path = write_dynamic_fixture
+    append_fixture_source_config(fixture_path)
+
+    first = run_cli("prepare", "--profile", "default", "--artifact-dir", @artifacts)
+    assert_equal 0, first[:status], first[:stderr]
+    first_handoff = JSON.parse(first[:stdout])
+    packet = run_cli(
+      "analysis-packet", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file")
+    )
+    assert_equal 0, packet[:status], packet[:stderr]
+    assert_equal "required", JSON.parse(packet[:stdout]).fetch("analysis_status")
+    result_path = write_fixture_result(first_handoff)
+    recorded = run_cli(
+      "record-result", "--run", first_handoff.fetch("run_id"), "--lease-file", first_handoff.fetch("lease_file"),
+      "--input", result_path
+    )
+    assert_equal 0, recorded[:status], recorded[:stderr]
+
+    changed = JSON.parse(File.read(fixture_path))
+    changed.fetch("records").first["title"] = "Changed fixture input"
+    File.write(fixture_path, JSON.generate(changed))
+    second = run_cli("prepare", "--profile", "default", "--artifact-dir", @artifacts)
+    assert_equal 0, second[:status], second[:stderr]
+    second_handoff = JSON.parse(second[:stdout])
+    second_packet = run_cli(
+      "analysis-packet", "--run", second_handoff.fetch("run_id"), "--lease-file", second_handoff.fetch("lease_file")
+    )
+    assert_equal 0, second_packet[:status], second_packet[:stderr]
+    assert_equal "required", JSON.parse(second_packet[:stdout]).fetch("analysis_status")
   end
 
   def test_unsupported_option_is_usage_error
@@ -453,7 +665,50 @@ class CyborgBridgeCLITest < Minitest::Test
 
   private
 
-  def write_fixture_result(handoff, provider_cost: false)
+  def append_analysis_task_config(backend_identity: "coding-harness")
+    File.open(@config, "a") do |file|
+      file.write(<<~TOML)
+
+        [analysis]
+        backend_identity = "#{backend_identity}"
+        [analysis.tasks.task-1]
+        capability = "cheap_structured_extraction"
+        required = true
+        reservation_micros = 1
+      TOML
+    end
+  end
+
+  def append_fixture_source_config(fixture_path)
+    File.open(@config, "a") do |file|
+      file.write(<<~TOML)
+
+        [sources.fixture]
+        enabled = true
+        adapter = "fixture"
+        account = "fixture"
+        path = "#{fixture_path}"
+        [sources.fixture.limits]
+        max_records = 2
+        max_response_bytes = 65536
+      TOML
+    end
+  end
+
+  def write_dynamic_fixture
+    fixture = JSON.parse(File.read(File.expand_path("../fixtures/sources/fixture-records.json", __dir__)))
+    observed_at = Time.now.utc
+    fixture.fetch("records").each_with_index do |record, index|
+      record["event_at"] = (observed_at - ((index + 1) * 60)).iso8601
+      record["observed_at"] = observed_at.iso8601
+      Array(record["evidence"]).each { |evidence| evidence["evidence_at"] = record.fetch("event_at") }
+    end
+    path = File.join(@tmpdir, "cache-fixture.json")
+    File.write(path, JSON.generate(fixture))
+    path
+  end
+
+  def write_fixture_result(handoff, provider_cost: false, backend_metadata: {})
     run_id = handoff.fetch("run_id")
     packet_path = File.join(@artifacts, run_id, "analysis-packet.json")
     packet = JSON.parse(File.read(packet_path)).fetch("payload")
@@ -470,7 +725,7 @@ class CyborgBridgeCLITest < Minitest::Test
       "claims" => [], "usage" => usage, "task_results" => [{
         "id" => task.fetch("id"), "task_id" => task.fetch("id"), "capability" => task.fetch("capability"),
         "dependency_ids" => task.fetch("dependency_ids", []), "status" => "succeeded", "claims" => [], "usage" => nil
-      }], "backend_metadata" => {}
+      }], "backend_metadata" => backend_metadata
     }
     path = File.join(@artifacts, run_id, "analysis-result.json")
     envelope = Cyborg::Bridge::Envelope.build(type: "analysis_result", run_id:, payload:, created_at: Time.now.utc)

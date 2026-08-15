@@ -7,6 +7,7 @@ require_relative "cache_key"
 require_relative "cache_policy"
 require_relative "../repositories/cache_repository"
 require_relative "../pipeline/analysis_packet_builder"
+require_relative "result_validator"
 
 module Cyborg
   module Analysis
@@ -31,10 +32,15 @@ module Cyborg
         return nil unless row && row[:cache_class].to_s == CACHE_CLASS
         return nil unless row[:input_fingerprint].to_s == input_fingerprint(packet)
 
-        payload = row[:payload]
-        payload.is_a?(Hash) ? payload : nil
+        normalize_result(packet:, result: row[:payload])
       rescue JSON::ParserError, KeyError, TypeError, ArgumentError
         nil
+      end
+
+      def entry_present?(packet:, backend_identity:)
+        @repository.find(stage: STAGE, cache_key: cache_key(packet:, backend_identity:)).is_a?(Hash)
+      rescue KeyError, TypeError, ArgumentError
+        false
       end
 
       def store(packet:, result:, backend_identity:, run_id:, now:)
@@ -43,6 +49,9 @@ module Cyborg
         raise ArgumentError, "run_id must be a nonblank String" unless run_id.is_a?(String) && !run_id.strip.empty?
 
         timestamp = canonical_time(now)
+        normalized = normalize_result(packet:, result:)
+        raise ArgumentError, "result must be accepted by the analysis validator" unless normalized
+
         @repository.store(
           id: SecureRandom.uuid,
           stage: STAGE,
@@ -55,7 +64,7 @@ module Cyborg
           created_at: timestamp,
           expires_at: @policy.expires_at(cache_class: CACHE_CLASS, now: timestamp),
           invalidated_at: nil, invalidation_command: nil, invalidation_run_id: nil, invalidation_reason: nil,
-          payload: result
+          payload: normalized
         )
         true
       end
@@ -76,6 +85,65 @@ module Cyborg
 
       def input_fingerprint(packet)
         Bridge::CanonicalJSON.sha256(CacheKey.normalize(reusable_packet(packet)))
+      end
+
+      def normalize_result(packet:, result:)
+        return nil unless result.is_a?(Hash)
+
+        rebound = rebind_run_ids(result, run_id: packet.fetch("run_id"))
+        validated = ResultValidator.new.validate(packet:, result: rebound)
+        return nil if validated.respond_to?(:accepted?) && !validated.accepted?
+
+        {
+          "claims" => validated.claims.map(&:to_h),
+          "usage" => deep_copy(validated.usage),
+          "task_results" => normalized_task_results(packet:, result: rebound),
+          "backend_metadata" => deep_copy(validated.backend_metadata)
+        }
+      rescue KeyError, TypeError, ArgumentError, JSON::ParserError
+        nil
+      end
+
+      def normalized_task_results(packet:, result:)
+        raw_tasks = result.key?("task_results") ? result["task_results"] : result["tasks"]
+        return [] unless raw_tasks.is_a?(Array)
+
+        declarations = Array(packet["tasks"]).to_h { |task| [task.fetch("id").to_s, task] }
+        raw_tasks.map do |raw_task|
+          raw = raw_task.to_h.transform_keys(&:to_s)
+          id = (raw["task_id"] || raw["id"]).to_s
+          declaration = declarations.fetch(id)
+          status = raw.fetch("status").to_s
+          status = "succeeded" if status == "success"
+          claims = Array(raw["claims"]).filter_map do |claim|
+            Analysis::Claim.from_h(claim).to_h
+          rescue ArgumentError, NoMethodError
+            nil
+          end
+          {
+            "id" => id, "task_id" => id, "capability" => declaration.fetch("capability"),
+            "dependency_ids" => Array(declaration["dependency_ids"]).map(&:to_s).uniq.sort,
+            "status" => status, "claims" => claims, "usage" => nil
+          }
+        end
+      end
+
+      def rebind_run_ids(value, run_id:)
+        case value
+        when Hash
+          value.each_with_object({}) do |(key, item), result|
+            name = key.to_s
+            result[name] = name == "run_id" ? run_id : rebind_run_ids(item, run_id:)
+          end
+        when Array
+          value.map { |item| rebind_run_ids(item, run_id:) }
+        else
+          value
+        end
+      end
+
+      def deep_copy(value)
+        JSON.parse(JSON.generate(value))
       end
 
       def reusable_packet(packet)

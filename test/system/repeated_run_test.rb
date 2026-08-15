@@ -50,7 +50,8 @@ class CyborgRepeatedRunTest < Minitest::Test
       "packet_version" => "1.0", "run_id" => "run-1", "prompt_version" => "prompt-1",
       "configuration_version" => "config-1",
       "versions" => {"packet" => "1.0", "prompt" => "prompt-1", "configuration" => "config-1", "task" => "1.0"},
-      "records" => [], "tasks" => [], "action_state_version" => 0
+      "records" => [], "tasks" => [], "allowed_action_kinds" => ["review"],
+      "maximum_claim_count" => 25, "maximum_output_bytes" => 8_192, "action_state_version" => 0
     }
     result = {"claims" => [], "usage" => {}, "task_results" => [], "backend_metadata" => {}}
     cache.store(packet:, result:, backend_identity: "coding-harness", run_id: "run-1", now: Time.utc(2026, 8, 14, 12))
