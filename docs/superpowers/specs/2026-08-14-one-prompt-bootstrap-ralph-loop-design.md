@@ -121,7 +121,7 @@ Only the primary agent edits and commits. Subagent state is disposable and never
 A GREEN iteration must prove all of the following:
 
 - First prompt initializes config, fixture, database, and a completed fixture-backed briefing without asking the user for paths.
-- No config, state, or database is created in `/tmp`, `/private/tmp`, or the repository tree; only the explicitly disposable artifact root may be temporary.
+- Config, state, and database are created only beneath the platform defaults resolved from `HOME`. The loop's isolated `HOME` may itself be disposable, but the operator must not invent sibling paths such as `/tmp/cyborg-state`, `/private/tmp/cyborg-config.toml`, or paths inside the repository; only the explicitly requested artifact root may live outside the resolved home defaults.
 - A second identical prompt reuses durable configuration/state and does not repeat setup or incur a second backend analysis call for unchanged inputs.
 - A separate clean shell with only `HOME` and `PATH` can run `bin/cyborg render --format markdown` successfully.
 - Existing valid configuration is not modified on rerun.
