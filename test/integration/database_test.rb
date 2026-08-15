@@ -30,6 +30,48 @@ class CyborgDatabaseTest < Minitest::Test
     assert_operator timeout, :<=, 30_000
   end
 
+  def test_database_connect_rejects_symlink
+    outside = File.join(@tmpdir, "outside.sqlite3")
+    File.binwrite(outside, "outside")
+    path = File.join(@tmpdir, "linked.sqlite3")
+    File.symlink(outside, path)
+
+    error = assert_raises(Cyborg::DatabaseError) { Cyborg::Database.connect(path: path) }
+    assert_equal "database.unsafe_path", error.code
+    assert_equal "outside", File.binread(outside)
+  end
+
+  def test_database_identity_handshake_rejects_swap_before_sqlite_open_with_hook
+    outside = File.join(@tmpdir, "outside.sqlite3")
+    File.binwrite(outside, "outside")
+    path = File.join(@tmpdir, "swapped.sqlite3")
+    hook = lambda do
+      File.rename(path, "#{path}.validated")
+      File.symlink(outside, path)
+    end
+
+    error = assert_raises(Cyborg::DatabaseError) do
+      Cyborg::Database.connect(path:, before_open: hook)
+    end
+
+    assert_equal "database.unsafe_path", error.code
+    assert_equal "outside", File.binread(outside)
+    refute File.exist?("#{path}-wal")
+    refute File.exist?("#{path}-shm")
+  ensure
+    File.unlink(path) if path && File.symlink?(path)
+  end
+
+  def test_wal_and_shm_sidecars_are_private
+    @db[:application_state].insert(key: "sidecar", value: "test", updated_at: "now")
+    @db.fetch("PRAGMA wal_checkpoint(PASSIVE)").all
+
+    %W[#{@path} #{@path}-wal #{@path}-shm].each do |path|
+      assert File.file?(path), "expected #{path}"
+      assert_equal 0o600, File.stat(path).mode & 0o777
+    end
+  end
+
   def test_schema_contains_every_v1_table
     assert_empty TABLES - @db.tables
   end

@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "json"
-require "fileutils"
 
 module Cyborg
   class CLI
@@ -102,7 +101,7 @@ module Cyborg
       config_env["CYBORG_CONFIG"] = config_path if config_path
       config = Config.load(path: nil, env: config_env)
       paths = Paths.resolve(config:, env: config_env)
-      FileUtils.mkdir_p(paths.state.to_s)
+      Bootstrap::SafeFilesystem.new.ensure_directory(path: paths.state.to_s, mode: 0o755)
       db = Database.connect(path: paths.database.to_s)
       db.migrate!
       Container.new(config:, paths:, db:, clock: Clock.new, env: config_env.freeze)

@@ -17,7 +17,9 @@ Gem::Specification.new do |spec|
     "Rakefile",
     "cyborg.gemspec",
     "bin/*",
-    "lib/**/*.rb"
+    "lib/**/*.rb",
+    "lib/**/*.toml",
+    "lib/**/*.json"
   ]
   spec.bindir = "bin"
   spec.executables = ["cyborg"]

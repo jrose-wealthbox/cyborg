@@ -23,4 +23,20 @@ class CyborgCLITest < Minitest::Test
     assert_empty @out.string
     assert_match "cli.unknown_command", @err.string
   end
+
+  def test_container_uses_private_bootstrap_state_directory
+    home = Dir.mktmpdir("cyborg-cli-home")
+    state = File.join(home, "state")
+    config = File.expand_path("../fixtures/config/minimal.toml", __dir__)
+    env = {"HOME" => home, "CYBORG_STATE_DIR" => state}
+    cli = Cyborg::CLI.new(stdout: @out, stderr: @err, env: env)
+
+    container = cli.send(:build_container, config)
+    begin
+      assert_equal 0o700, File.stat(state).mode & 0o777
+    ensure
+      container.db.disconnect
+      FileUtils.remove_entry(home)
+    end
+  end
 end

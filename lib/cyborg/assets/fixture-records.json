@@ -1,0 +1,37 @@
+{
+  "next_cursor": "fixture-cursor-2",
+  "records": [
+    {
+      "source_record_id": "fixture-1",
+      "record_kind": "notification",
+      "title": "Review requested",
+      "summary": "Please review the change",
+      "structured_fields": {"repository": "cyborg"},
+      "participants": ["me@example.com"],
+      "owner_identity": "me@example.com",
+      "canonical_target_type": "github_pr",
+      "canonical_target_id": "42",
+      "deep_link": "https://github.example/cyborg/pull/42",
+      "event_at": "2026-08-12T00:00:00Z",
+      "timestamp_kind": "event_at",
+      "observed_at": "2026-08-12T00:01:00Z",
+      "evidence": [{"source_url": "https://github.example/cyborg/pull/42", "source_label": "GitHub", "excerpt": "Please review", "evidence_at": "2026-08-12T00:00:00Z", "relation": "supports"}]
+    },
+    {
+      "source_record_id": "fixture-2",
+      "record_kind": "notification",
+      "title": "Build completed",
+      "summary": "The build finished successfully",
+      "structured_fields": {"repository": "cyborg", "status": "success"},
+      "participants": [],
+      "owner_identity": "me@example.com",
+      "canonical_target_type": "github_check",
+      "canonical_target_id": "99",
+      "deep_link": "https://github.example/cyborg/actions/99",
+      "event_at": "2026-08-12T00:00:30Z",
+      "timestamp_kind": "event_at",
+      "observed_at": "2026-08-12T00:01:00Z",
+      "evidence": []
+    }
+  ]
+}
