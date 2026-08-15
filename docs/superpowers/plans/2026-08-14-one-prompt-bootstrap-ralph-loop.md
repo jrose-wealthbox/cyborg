@@ -47,7 +47,7 @@ The scenario harness substitutes only `$CYBORG_RALPH_ARTIFACTS` with the absolut
 - state/database exist beneath the platform default resolved from `$HOME`
 - no ad hoc `/tmp/cyborg-state`, `/private/tmp/cyborg-config.toml`, or repository state exists
 - first run publishes fixture Markdown
-- second identical run reuses setup and expensive analysis
+- second identical run reuses setup and the validated bridge result; the default zero-task packet makes no host-backend task calls
 - clean-shell render succeeds with only HOME and PATH
 - config bytes remain unchanged on rerun
 - invalid existing config remains unchanged and fails closed
@@ -555,7 +555,8 @@ def test_init_run_rerun_and_clean_shell_render_use_persistent_defaults
 
   assert_equal 0, rendered.status
   assert_equal first.fetch("item_ids"), second.fetch("item_ids")
-  assert_equal 1, analysis_backend_call_count
+  assert_equal %w[required cached], [first.fetch("analysis_status"), second.fetch("analysis_status")]
+  assert_equal 0, analysis_backend_task_call_count
   assert_equal config_bytes_after_first, File.binread(default_config_path)
   assert_empty ad_hoc_state_paths
 end

@@ -13,7 +13,7 @@ class CyborgOnePromptBootstrapTest < Minitest::Test
     @repo = File.expand_path("../..", __dir__)
     @captures = []
     @protected_lease_bytes = []
-    @analysis_backend_call_count = 0
+    @analysis_backend_task_call_count = 0
     @ad_hoc_paths_before = ad_hoc_state_paths
     @repo_status_before = git_capture("status", "--short", "--ignored")
     @repo_binary_diff_before = git_capture("diff", "--binary")
@@ -37,7 +37,6 @@ class CyborgOnePromptBootstrapTest < Minitest::Test
     assert_path_exists init_document.fetch("fixture_path")
     assert_path_exists init_document.fetch("database_path")
 
-    append_analysis_task(config_path)
     first = fixture_bridge_run
     config_bytes_after_first = File.binread(config_path)
     second = fixture_bridge_run
@@ -47,7 +46,7 @@ class CyborgOnePromptBootstrapTest < Minitest::Test
     assert_includes rendered.fetch(:stdout), "# CYBORG"
     assert_equal first.fetch("item_ids"), second.fetch("item_ids")
     assert_equal %w[required cached], [first.fetch("analysis_status"), second.fetch("analysis_status")]
-    assert_equal 1, @analysis_backend_call_count
+    assert_equal 0, @analysis_backend_task_call_count
     assert_equal config_bytes_after_first, File.binread(default_config_path)
     assert_equal @ad_hoc_paths_before, ad_hoc_state_paths
     assert_path_exists File.join(@home, "Library", "Application Support", "CYBORG", "cyborg.sqlite3")
@@ -73,6 +72,29 @@ class CyborgOnePromptBootstrapTest < Minitest::Test
     scan_captures!
   end
 
+  def test_clean_shell_render_isolated_from_ambient_cyborg_and_credential_environment
+    initialized = cli("init")
+    assert_equal 0, initialized.fetch(:status), initialized.fetch(:stderr)
+    fixture_bridge_run
+    credential = "ambient-credential-for-isolation"
+    previous = {
+      "CYBORG_PROFILE" => ENV["CYBORG_PROFILE"], "GH_TOKEN" => ENV["GH_TOKEN"],
+      "OPENAI_API_KEY" => ENV["OPENAI_API_KEY"]
+    }
+    ENV["CYBORG_PROFILE"] = "ambient-invalid-profile"
+    ENV["GH_TOKEN"] = credential
+    ENV["OPENAI_API_KEY"] = credential
+
+    rendered = clean_shell_cli("render", "--format", "markdown")
+
+    assert_equal 0, rendered.fetch(:status), rendered.fetch(:stderr)
+    assert_includes rendered.fetch(:stdout), "# CYBORG"
+    refute_includes rendered.fetch(:stdout), credential
+    refute_includes rendered.fetch(:stderr), credential
+  ensure
+    previous&.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+  end
+
   private
 
   def fixture_bridge_run
@@ -91,8 +113,8 @@ class CyborgOnePromptBootstrapTest < Minitest::Test
     assert_includes %w[required cached], analysis_status
 
     result_path = if analysis_status == "required"
-      @analysis_backend_call_count += 1
-      write_analysis_result(handoff.fetch("run_id"), packet_status.fetch("output"))
+      packet = JSON.parse(File.binread(packet_status.fetch("output"))).fetch("payload")
+      write_analysis_result(handoff.fetch("run_id"), packet.fetch("tasks"))
     else
       cached_path = packet_status.fetch("analysis_result")
       assert_path_exists cached_path
@@ -112,16 +134,12 @@ class CyborgOnePromptBootstrapTest < Minitest::Test
     @captures.concat([prepared, packet_command, recorded, rendered].compact.flat_map { |value| value.values_at(:stdout, :stderr) })
   end
 
-  def write_analysis_result(run_id, packet_path)
-    packet = JSON.parse(File.binread(packet_path)).fetch("payload")
-    task = packet.fetch("tasks").fetch(0)
+  def write_analysis_result(run_id, tasks)
+    task_results = tasks.empty? ? [] : execute_host_task_graph(tasks)
     payload = {
       "claims" => [],
       "usage" => {},
-      "task_results" => [{
-        "id" => task.fetch("id"), "task_id" => task.fetch("id"), "capability" => task.fetch("capability"),
-        "dependency_ids" => task.fetch("dependency_ids", []), "status" => "succeeded", "claims" => [], "usage" => nil
-      }],
+      "task_results" => task_results,
       "backend_metadata" => {"backend" => "fixture"}
     }
     path = File.join(@artifacts, run_id, "host-analysis-result.json")
@@ -130,15 +148,13 @@ class CyborgOnePromptBootstrapTest < Minitest::Test
     path
   end
 
-  def append_analysis_task(config_path)
-    File.open(config_path, "a") do |file|
-      file.write(<<~TOML)
-
-        [analysis.tasks.task-1]
-        capability = "cheap_structured_extraction"
-        required = true
-        reservation_micros = 1
-      TOML
+  def execute_host_task_graph(tasks)
+    @analysis_backend_task_call_count += tasks.length
+    tasks.map do |task|
+      {
+        "id" => task.fetch("id"), "task_id" => task.fetch("id"), "capability" => task.fetch("capability"),
+        "dependency_ids" => task.fetch("dependency_ids", []), "status" => "succeeded", "claims" => [], "usage" => nil
+      }
     end
   end
 
@@ -147,9 +163,9 @@ class CyborgOnePromptBootstrapTest < Minitest::Test
       "HOME" => @home, "PATH" => ENV.fetch("PATH"), "LANG" => "C", "LC_ALL" => "C",
       "CYBORG_RALPH_ARTIFACTS" => @artifacts, "CYBORG_CONFIG" => nil, "CYBORG_STATE_DIR" => nil,
       "CYBORG_DATABASE" => nil, "CYBORG_ARTIFACT_DIR" => nil, "CYBORG_LOG_DIR" => nil,
-      "CYBORG_LOCK_FILE" => nil, "RUBYOPT" => nil
+      "CYBORG_LOCK_FILE" => nil, "CYBORG_PROFILE" => nil, "RUBYOPT" => nil
     }
-    stdout, stderr, status = Open3.capture3(env, @bin, *arguments)
+    stdout, stderr, status = Open3.capture3(env, @bin, *arguments, unsetenv_others: true)
     value = {stdout:, stderr:, status: status.exitstatus}
     @captures.concat([stdout, stderr])
     value
@@ -159,9 +175,10 @@ class CyborgOnePromptBootstrapTest < Minitest::Test
     env = {
       "HOME" => @home, "PATH" => ENV.fetch("PATH"), "LANG" => "C", "LC_ALL" => "C",
       "CYBORG_CONFIG" => nil, "CYBORG_STATE_DIR" => nil, "CYBORG_DATABASE" => nil,
-      "CYBORG_ARTIFACT_DIR" => nil, "CYBORG_LOG_DIR" => nil, "CYBORG_LOCK_FILE" => nil, "RUBYOPT" => nil
+      "CYBORG_ARTIFACT_DIR" => nil, "CYBORG_LOG_DIR" => nil, "CYBORG_LOCK_FILE" => nil,
+      "CYBORG_PROFILE" => nil, "CYBORG_RALPH_ARTIFACTS" => nil, "RUBYOPT" => nil
     }
-    stdout, stderr, status = Open3.capture3(env, @bin, *arguments)
+    stdout, stderr, status = Open3.capture3(env, @bin, *arguments, unsetenv_others: true)
     value = {stdout:, stderr:, status: status.exitstatus}
     @captures.concat([stdout, stderr])
     value
