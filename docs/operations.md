@@ -2,25 +2,32 @@
 
 ## Local setup and migrations
 
-Use `config/example.toml` as the starting point for a local, credential-free
-configuration. Resolve the active path with:
+Use the idempotent initializer as the local, credential-free bootstrap and
+validation precondition. It resolves the default beneath HOME and installs only
+missing safe assets:
 
 ```sh
+bin/cyborg init
 bin/cyborg config path
 ```
 
-The example enables the bounded fixture source. Copy
-`test/fixtures/sources/fixture-records.json` beside the copied configuration
-as `~/.config/cyborg/fixture-records.json`, or replace that value with an
-absolute local fixture path; the config does not depend on the repository
-working directory.
-
-The first command that opens state applies timestamped SQLite migrations. To
-migrate explicitly, set `CYBORG_DATABASE` or use the configured state path:
+Init returns `initialized` on the first call and `ready` on an identical rerun.
+It never overwrites an existing regular config, fixture, or database; malformed
+or unsafe existing config fails closed without replacement. An explicit
+`--config PATH` takes precedence over `CYBORG_CONFIG` and the HOME default:
 
 ```sh
-CYBORG_DATABASE=/tmp/cyborg.sqlite3 bundle exec rake db:migrate
+bin/cyborg init --config /absolute/path/config.toml
 ```
+
+Do not create bootstrap files with `mkdir`, `cp`, shell redirection, or a
+temporary config/state path. Persistent default state remains separate from the
+disposable artifact root supplied to `prepare --artifact-dir`.
+
+The initializer applies timestamped SQLite migrations. No separate migration
+command is needed for the normal bridge flow. If an explicit migration is
+required, use the `database_path` emitted by `bin/cyborg init`; never let the
+task fall back to a repository-local or invented temporary database.
 
 Use a disposable `CYBORG_STATE_DIR`, `CYBORG_ARTIFACT_DIR`, and lock file for
 experiments. Do not share a state directory between unrelated environments.

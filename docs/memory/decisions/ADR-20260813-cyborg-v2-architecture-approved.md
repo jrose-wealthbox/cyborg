@@ -5,10 +5,10 @@ status: active
 title: Implement CYBORG v1 as the approved Ruby modular-monolith vertical slice
 summary: CYBORG v2 is approved as implementation authority: v1 is a Ruby 4.x modular monolith with SQLite, direct GitHub and local-Git adapters, a protected host-analysis bridge, stable actions, and persisted Markdown/JSON views.
 created_at: '2026-08-13T02:58:45Z'
-updated_at: '2026-08-13T22:31:26Z'
-last_verified_at: '2026-08-13T22:31:26Z'
+updated_at: '2026-08-15T03:12:52Z'
+last_verified_at: '2026-08-15T03:12:52Z'
 tags: [architecture, cyborg, v1, bridge, persistence]
-components: [docs/cyborg-architecture-design-v2-sol-medium.md, docs/superpowers/plans/2026-08-12-cyborg-v1-vertical-slice.md, lib/cyborg/analysis/orchestrator.rb, lib/cyborg/runs/publisher.rb, db/migrations, skills/cyborg, test/system]
+components: [docs/cyborg-architecture-design-v2-sol-medium.md, docs/superpowers/plans/2026-08-12-cyborg-v1-vertical-slice.md, lib/cyborg/analysis/orchestrator.rb, lib/cyborg/runs/publisher.rb, lib/cyborg/bootstrap/initializer.rb, db/migrations, skills/cyborg, test/contract, test/system]
 supersedes: []
 superseded_by:
 ---
@@ -34,6 +34,7 @@ The repository had an approved earlier architecture and a later v2 proposal that
 
 - V1 work follows the ordered plan under `docs/superpowers/plans/` and proves a narrow end-to-end slice before adding more providers or surfaces.
 - Analysis execution is composed by the Ruby `Cyborg::Analysis::Orchestrator`, not by the host skill. It owns dependency-ready launches, validated backend outcomes, cross-run cache reuse, budget gating, provider-spend reconciliation, reservation release, hierarchical usage, and transactional cleanup after partial failure.
+- The host bridge begins every invocation with CLI-owned idempotent initialization and validation. Persistent default config, fixture, and SQLite state remain separate from disposable run artifacts; the host branches only on the CLI's parsed `analysis_status`, executing host analysis for `required` and replaying the CLI-provided validated result for `cached`.
 - Publication reconciliation preserves a concurrent manual action transition at the read/reconcile boundary; acceptance tests force that interleaving and require the manual state to win.
 - `motherbrain/` stays separate from CYBORG application code.
 - Direct provider backends, scheduling, additional remote sources, and additional renderers remain post-v1 work.
@@ -46,6 +47,7 @@ The repository had an approved earlier architecture and a later v2 proposal that
 - [`lib/cyborg/analysis/orchestrator.rb`](../../../lib/cyborg/analysis/orchestrator.rb): implements the deterministic analysis execution, cache, budget, usage, and cleanup boundary.
 - [`test/system/v1_acceptance_test.rb`](../../../test/system/v1_acceptance_test.rb): verifies backend reuse, budget exhaustion, provider-spend reconciliation, partial-failure rollback, concurrent manual transitions, and renderer equivalence.
 - [`test/system/repeated_run_test.rb`](../../../test/system/repeated_run_test.rb): verifies one backend analysis execution across one hundred identical runs.
+- [`test/contract/skill_bootstrap_test.rb`](../../../test/contract/skill_bootstrap_test.rb) and [`test/system/one_prompt_bootstrap_test.rb`](../../../test/system/one_prompt_bootstrap_test.rb): verify the provider-neutral bootstrap precondition, required/cached bridge branch, idempotent defaults, clean-shell rendering, protected-output scan, and repository integrity.
 
 ## Revisit when
 

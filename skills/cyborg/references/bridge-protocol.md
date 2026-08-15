@@ -4,6 +4,43 @@ This is the provider-neutral host-side contract observed in the current CLI.
 The CLI and persisted artifacts remain authoritative; do not reimplement their
 validation or policy in the host adapter.
 
+## Initialization and path precedence
+
+Resolve the default configuration path with `cyborg config path`, then invoke
+`cyborg init` before every bridge run, even when a previous run succeeded. The
+command validates the existing configuration and installs only missing safe
+defaults; it never overwrites an existing regular config, fixture, or database.
+An explicit `--config PATH` on the command takes precedence over
+`CYBORG_CONFIG` and the HOME default, and must be passed explicitly to both
+`config path` and `init` when the user supplies it. Do not create these paths
+with shell commands or invent a temporary config/state location.
+
+Successful init emits one compact JSON object and no other stdout:
+
+```json
+{
+  "status": "initialized|ready",
+  "config_path": "/home/user/.config/cyborg/config.toml",
+  "fixture_path": "/home/user/.config/cyborg/fixture-records.json",
+  "state_dir": "/home/user/Library/Application Support/CYBORG",
+  "database_path": "/home/user/Library/Application Support/CYBORG/cyborg.sqlite3",
+  "created": ["config", "fixture", "database"]
+}
+```
+
+`created` is empty for `ready`. A malformed, unsafe, or unwriteable existing
+configuration is preserved and fails closed. Init exits `0` for `initialized`
+or `ready`, `64` for usage errors, `70` for unexpected internal errors, `73`
+for persistence failures, and `78` for invalid configuration. Do not continue
+unless the parsed status is exactly `initialized` or `ready`.
+
+Persistent default state (the config, fixture, SQLite database, lock, and logs
+resolved beneath HOME or an explicit config's configured paths) is separate from
+the disposable artifact root passed to `prepare --artifact-dir`. Keep leases,
+retrieval envelopes, analysis packets/results, and presentation artifacts only
+under that per-run artifact root; never use it as a substitute config or state
+directory, and never put a persistent default there.
+
 ## Run lifecycle
 
 Prepare a run:
@@ -75,9 +112,26 @@ cyborg analysis-packet --run RUN_ID --lease-file LEASE
 
 The command writes `analysis-packet.json` under the run artifact directory and
 prints a JSON status object. Required retrieval responses must be present as
-persisted memberships with terminal source status before this succeeds. The
-packet is the bounded input to analysis; do not pass raw retrieval envelopes,
-lease material, credentials, or unbounded source data to a task executor.
+persisted memberships with terminal source status before this succeeds. Its
+status schema is:
+
+```json
+{
+  "run_id": "...",
+  "status": "running",
+  "output": "/absolute/artifacts/RUN_ID/analysis-packet.json",
+  "analysis_status": "required|cached",
+  "analysis_result": null
+}
+```
+
+For `cached`, `analysis_result` is the CLI-generated absolute path to a
+validated, run-bound `analysis_result` envelope beneath the artifact root. Pass
+that path directly to `record-result`; do not open, copy, parse, or rewrite its
+payload. For `required`, `analysis_result` is null and the packet is the bounded
+input to host analysis. Branch only on the parsed `analysis_status`; an unknown
+value is a bounded failure. Do not pass raw retrieval envelopes, lease material,
+credentials, or unbounded source data to a task executor.
 
 Use only declared packet tasks. A task is ready when every `dependency_ids`
 entry is completed and the task has not already launched. Execute tasks in

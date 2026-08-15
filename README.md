@@ -7,26 +7,26 @@ JSON.
 
 ## Install and configure
 
-CYBORG requires Ruby 4.x and SQLite. Install the bundled dependencies, copy
-the safe example configuration, and point `CYBORG_CONFIG` at the copy:
+CYBORG requires Ruby 4.x and SQLite. Install the bundled dependencies. The
+one-prompt harness flow performs safe, idempotent initialization automatically;
+it needs no prior `mkdir`, `cp`, or `CYBORG_CONFIG` export:
 
 ```sh
 bundle install
-mkdir -p ~/.config/cyborg
-cp config/example.toml ~/.config/cyborg/config.toml
-cp test/fixtures/sources/fixture-records.json ~/.config/cyborg/fixture-records.json
-export CYBORG_CONFIG="$HOME/.config/cyborg/config.toml"
-bin/cyborg config path
 ```
 
 The configuration contains policy and identifiers only. Never put credentials,
 tokens, passwords, private keys, or source bodies in it. The CLI creates and
-migrates the SQLite database in the configured state directory.
+migrates the SQLite database in the configured state directory. As an
+observable troubleshooting command, run `bin/cyborg init`; it prints one compact
+JSON object with `status` `initialized` or `ready`, resolved paths, and the
+missing defaults it created. Existing defaults are validated and never
+overwritten. Use `bin/cyborg config path` to inspect the resolved default.
 
 The bundled fixture source is offline and credential-free, so the commands
-above are enough to initialize CYBORG and verify its local configuration. The
-fixture file is intentionally copied beside the configuration so the example
-continues to work outside the repository directory.
+above are enough to install dependencies; the skill's init precondition installs
+the fixture beside the default configuration and keeps it usable outside the
+repository directory.
 
 ## Credentials
 
@@ -62,6 +62,10 @@ validation, cache policy, action state, publication, and rendering.
 Open the repository in Codex, Claude Code, or another coding harness that can
 read local skills, then give it this prompt:
 
+The skill first resolves the selected config and runs `cyborg init` on every
+invocation. Continue only for the compact `initialized` or `ready` result; the
+initializer owns all config, fixture, and persistent state creation.
+
 ```text
 Read and use `skills/cyborg/SKILL.md`. Run CYBORG interactively with profile `default` and artifacts under `/tmp/cyborg-artifacts`. Follow `skills/cyborg/references/bridge-protocol.md` through prepare, optional retrieval ingestion, analysis-packet execution, record-result, and Markdown rendering. Display only the renderer output and keep lease contents and protected source payloads out of prompts and logs.
 ```
@@ -69,12 +73,20 @@ Read and use `skills/cyborg/SKILL.md`. Run CYBORG interactively with profile `de
 The harness will coordinate:
 
 ```text
-prepare → optional ingest → analysis-packet → host analysis → record-result → render
+init → prepare → optional ingest → analysis-packet →
+  required: host analysis → record-result
+  cached: CLI-provided analysis_result → record-result
+→ render
 ```
 
 The repository-local skill is not installed globally. If the harness does not
 discover it automatically, explicitly direct the harness to the path shown in
 the prompt.
+
+When an explicit config is needed, pass `--config PATH` to the CLI commands;
+that user choice takes precedence over `CYBORG_CONFIG` and the HOME default.
+Keep persistent default state under its resolved state directory and use the
+prompt's artifact directory only for disposable bridge artifacts.
 
 ## Manual host workflow
 
