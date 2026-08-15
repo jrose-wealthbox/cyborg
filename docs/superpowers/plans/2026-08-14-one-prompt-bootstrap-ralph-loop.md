@@ -631,7 +631,7 @@ Read `motherbrain/docs/PROTOCOL.md` and the active architecture ADR. If determin
 - [ ] **Step 8: Commit the GREEN operator contract**
 
 ```sh
-git add README.md docs/operations.md skills/cyborg test/contract/skill_bootstrap_test.rb test/system/one_prompt_bootstrap_test.rb
+git add cyborg.gemspec README.md docs/operations.md docs/superpowers/specs/2026-08-14-one-prompt-bootstrap-ralph-loop-design.md skills/cyborg test/contract/skill_bootstrap_test.rb test/system/gem_package_test.rb test/system/one_prompt_bootstrap_test.rb
 # Only when Task 5 Step 7 changed durable memory, add the exact ADR and index paths named there.
 git commit -m "feat: bootstrap cyborg from one harness prompt"
 ```
