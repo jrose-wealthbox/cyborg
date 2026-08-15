@@ -39,4 +39,17 @@ class CyborgCLITest < Minitest::Test
       FileUtils.remove_entry(home)
     end
   end
+
+  def test_existing_group_readable_state_directory_is_rejected
+    home = Dir.mktmpdir("cyborg-cli-home")
+    state = File.join(home, "state")
+    FileUtils.mkdir_p(state)
+    File.chmod(0o755, state)
+    config = File.expand_path("../fixtures/config/minimal.toml", __dir__)
+    cli = Cyborg::CLI.new(stdout: @out, stderr: @err, env: {"HOME" => home, "CYBORG_STATE_DIR" => state})
+
+    assert_raises(Cyborg::InvalidConfiguration) { cli.send(:build_container, config) }
+  ensure
+    FileUtils.remove_entry(home) if home && File.exist?(home)
+  end
 end

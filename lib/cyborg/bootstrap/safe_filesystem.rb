@@ -92,9 +92,9 @@ module Cyborg
               end
             end
           ensure
-            close_fd(temp_fd)
-            LibC.unlinkat(parent_fd, temp_name, 0)
-            fail_persistence!("config.persistence") unless LibC.fsync(parent_fd) == 0
+            primary_error = $!
+            cleanup_error = cleanup_temp(parent_fd, temp_name, temp_fd)
+            raise cleanup_error if primary_error.nil? && cleanup_error
           end
         end
       rescue InvalidConfiguration
@@ -308,6 +308,17 @@ module Cyborg
         LibC.close(fd) if fd && fd >= 0
       rescue StandardError
         nil
+      end
+
+      def cleanup_temp(parent_fd, temp_name, temp_fd)
+        close_fd(temp_fd)
+        unlink_result = LibC.unlinkat(parent_fd, temp_name, 0)
+        unlink_errno = errno if unlink_result < 0
+        cleanup_error = if unlink_result < 0 && unlink_errno != Errno::ENOENT::Errno
+          InvalidConfiguration.new("config.persistence")
+        end
+        cleanup_error ||= InvalidConfiguration.new("config.persistence") unless LibC.fsync(parent_fd) == 0
+        cleanup_error
       end
 
       def errno

@@ -101,7 +101,7 @@ module Cyborg
       config_env["CYBORG_CONFIG"] = config_path if config_path
       config = Config.load(path: nil, env: config_env)
       paths = Paths.resolve(config:, env: config_env)
-      Bootstrap::SafeFilesystem.new.ensure_directory(path: paths.state.to_s, mode: 0o755)
+      Bootstrap::SafeFilesystem.new.ensure_directory(path: paths.state.to_s, mode: 0o700)
       db = Database.connect(path: paths.database.to_s)
       db.migrate!
       Container.new(config:, paths:, db:, clock: Clock.new, env: config_env.freeze)
