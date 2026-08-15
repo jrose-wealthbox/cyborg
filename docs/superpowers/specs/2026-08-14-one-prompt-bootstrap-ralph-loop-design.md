@@ -12,7 +12,7 @@ The existing provider-neutral prompt remains the entry point. The CYBORG skill p
 
 ```text
 cyborg config path
-cyborg init (only when initialization is incomplete)
+cyborg init
 cyborg prepare
 optional cyborg ingest
 cyborg analysis-packet
@@ -89,7 +89,8 @@ Tests verify that packaged assets and repository examples remain semantically eq
 Add a bootstrap precondition to `skills/cyborg/SKILL.md`:
 
 1. Run `cyborg config path`.
-2. If the path does not name a regular safe file, run `cyborg init` once.
+2. On every invocation, run `cyborg init` to validate existing defaults or create
+   missing safe defaults.
 3. Continue only after `cyborg init` exits `0` and reports `initialized` or `ready`.
 4. Use the default config and persistent state for every subsequent bridge command.
 
@@ -122,7 +123,7 @@ A GREEN iteration must prove all of the following:
 
 - First prompt initializes config, fixture, database, and a completed fixture-backed briefing without asking the user for paths.
 - Config, state, and database are created only beneath the platform defaults resolved from `HOME`. The loop's isolated `HOME` may itself be disposable, but the operator must not invent sibling paths such as `/tmp/cyborg-state`, `/private/tmp/cyborg-config.toml`, or paths inside the repository; only the explicitly requested artifact root may live outside the resolved home defaults.
-- A second identical prompt reuses durable configuration/state and does not repeat setup or incur a second backend analysis call for unchanged inputs.
+- A second identical prompt performs idempotent initialization validation, reuses durable configuration/state, and does not incur a second backend analysis call for unchanged inputs.
 - A separate clean shell with only `HOME` and `PATH` can run `bin/cyborg render --format markdown` successfully.
 - Existing valid configuration is not modified on rerun.
 - Existing invalid configuration fails closed and remains byte-for-byte unchanged.

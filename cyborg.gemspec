@@ -17,6 +17,7 @@ Gem::Specification.new do |spec|
     "Rakefile",
     "cyborg.gemspec",
     "bin/*",
+    "db/migrations/*.rb",
     "lib/**/*.rb",
     "lib/**/*.toml",
     "lib/**/*.json"

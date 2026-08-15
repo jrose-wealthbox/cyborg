@@ -313,12 +313,12 @@ bundle exec ruby -Itest test/unit/bootstrap/safe_filesystem_test.rb
 bundle exec ruby -Itest test/unit/bootstrap/initializer_test.rb
 bundle exec ruby -Itest test/integration/database_test.rb
 gem build cyborg.gemspec --output /private/tmp/cyborg-bootstrap-verification.gem
-gem specification /private/tmp/cyborg-bootstrap-verification.gem files | rg "lib/cyborg/assets/(config.example.toml|fixture-records.json)"
+gem specification /private/tmp/cyborg-bootstrap-verification.gem files | rg "(db/migrations/.*\\.rb|lib/cyborg/assets/(config.example.toml|fixture-records.json))"
 bundle exec rake test
 git diff --check
 ```
 
-Inspect the built gem specification and confirm both asset paths are present; do not commit the built gem.
+Inspect the built gem specification and confirm every `db/migrations/*.rb` path and both asset paths are present; do not commit the built gem.
 
 Commit:
 
@@ -528,11 +528,13 @@ git commit -m "feat: reuse validated bridge analysis"
 ### Task 5: Evolve the Skill Through the Bounded GREEN Ralph Loop
 
 **Files:**
+- Modify: `cyborg.gemspec`
 - Modify: `skills/cyborg/SKILL.md`
 - Modify: `skills/cyborg/references/bridge-protocol.md`
 - Modify: `skills/cyborg/tests/bootstrap-ralph-results.md`
 - Modify: `README.md`
 - Create: `test/contract/skill_bootstrap_test.rb`
+- Create: `test/system/gem_package_test.rb`
 - Create: `test/system/one_prompt_bootstrap_test.rb`
 - Modify: `docs/operations.md`
 
@@ -615,7 +617,7 @@ bundle exec ruby -Itest test/system/bridge_cli_test.rb
 bundle exec rake test
 ruby -w -Imotherbrain/test -e 'Dir["motherbrain/test/**/*_test.rb"].sort.each { |f| require_relative f }'
 gem build cyborg.gemspec --output /private/tmp/cyborg-bootstrap-verification.gem
-gem specification /private/tmp/cyborg-bootstrap-verification.gem files | rg "lib/cyborg/assets/(config.example.toml|fixture-records.json)"
+gem specification /private/tmp/cyborg-bootstrap-verification.gem files | rg "(db/migrations/.*\\.rb|lib/cyborg/assets/(config.example.toml|fixture-records.json))"
 git diff --check
 git status --short --ignored
 ```
