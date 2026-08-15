@@ -110,3 +110,25 @@ bundle exec rake test
 ```
 
 The six failures are existing action/support CLI tests whose setup creates explicit state directories with `FileUtils.mkdir_p` (0755); strict `SafeFilesystem#ensure_directory(mode: 0700)` now correctly rejects those leaves. The review requirement and new regression require this fail-closed behavior, so changing it to make those legacy fixtures pass would weaken the mandated policy. `git diff --check` is clean.
+
+## Review fix round 1 completion
+
+The two legacy system-test fixtures were updated to create their explicit state
+leaves with mode 0700; production policy remains strict and unchanged.
+
+```text
+bundle exec ruby -Itest test/system/action_cli_test.rb
+4 runs, 55 assertions, 0 failures, 0 errors, 0 skips
+
+bundle exec ruby -Itest test/system/support_cli_test.rb
+5 runs, 36 assertions, 0 failures, 0 errors, 0 skips
+
+bundle exec rake test
+340 runs, 1457 assertions, 0 failures, 0 errors, 0 skips
+
+git diff --check
+clean
+```
+
+The full run emits one test-only Ruby warning from the Fiddle method override
+used to inject `unlinkat` failure; it does not affect test results.

@@ -13,6 +13,7 @@ class CyborgActionCLITest < Minitest::Test
     @artifacts = File.join(@tmpdir, "artifacts")
     @config = File.join(@tmpdir, "config.toml")
     FileUtils.mkdir_p([@state, @artifacts])
+    File.chmod(0o700, @state)
     write_config(@config)
     @action_ids = seed_actions
   end

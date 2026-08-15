@@ -14,6 +14,7 @@ class CyborgSupportCLITest < Minitest::Test
     @artifacts = File.join(@tmpdir, "artifacts")
     @config = File.join(@tmpdir, "config.toml")
     FileUtils.mkdir_p([@state, @artifacts])
+    File.chmod(0o700, @state)
     FileUtils.mkdir_p(File.join(@home, ".config", "cyborg"))
     write_config(@config)
     FileUtils.cp(@config, File.join(@home, ".config", "cyborg", "config.toml"))
