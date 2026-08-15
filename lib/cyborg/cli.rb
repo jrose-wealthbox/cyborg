@@ -6,6 +6,7 @@ module Cyborg
   class CLI
     Container = Data.define(:config, :paths, :db, :clock, :env)
     COMMANDS = {
+      "init" => Commands::Init,
       "prepare" => Commands::Prepare,
       "ingest" => Commands::Ingest,
       "analysis-packet" => Commands::AnalysisPacket,
@@ -40,6 +41,11 @@ module Cyborg
 
         @stdout.puts(Config.path(path: config_path, env: @env))
         return 0
+      end
+      if command == "init"
+        raise UsageError.new("cli.unexpected_argument") unless argv.empty?
+
+        return Commands::Init.new(stdout: @stdout, env: @env).call(config_path:)
       end
       container = build_container(config_path)
       begin

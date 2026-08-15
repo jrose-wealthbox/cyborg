@@ -24,6 +24,19 @@ class CyborgCLITest < Minitest::Test
     assert_match "cli.unknown_command", @err.string
   end
 
+  def test_init_dispatches_before_building_the_normal_container
+    cli = Cyborg::CLI.new(stdout: @out, stderr: @err, env: {"HOME" => Dir.mktmpdir("cyborg-cli-init")})
+    cli.define_singleton_method(:build_container) { |_config_path| flunk "init must not build the normal container" }
+
+    status = cli.dispatch(["init"])
+
+    assert_equal 0, status
+    assert_empty @err.string
+    assert_equal "initialized", JSON.parse(@out.string).fetch("status")
+  ensure
+    FileUtils.remove_entry(cli.instance_variable_get(:@env).fetch("HOME")) if cli
+  end
+
   def test_container_uses_private_bootstrap_state_directory
     home = Dir.mktmpdir("cyborg-cli-home")
     state = File.join(home, "state")
